@@ -53,11 +53,11 @@ class TEMDataset(BaseDataset):
             elif type(self.base_dataset) is EDSTEMSpectrum:
                 self.nav_img=self.base_dataset.sum(axis='Energy').as_signal2D(image_axes=('x','y')) #creating a navigation image, intensity of each pixel is integrated intensity of Xrays
                 self.spectra=self.base_dataset # by default hyperspy sums over navigation axis
-				self.spectra.change_dtype("float32")
-				self.spectra_raw = self.spectra.deepcopy()
-				self.original_nav_img=self.nav_img.deepcopy()
-				self.feature_list = self.spectra.metadata.Sample.xray_lines
-				self.feature_dict = {el: i for (i, el) in enumerate(self.feature_list)}
+		self.spectra.change_dtype("float32")
+		self.spectra_raw = self.spectra.deepcopy()
+		self.original_nav_img=self.nav_img.deepcopy()
+		self.feature_list = self.spectra.metadata.Sample.xray_lines
+		self.feature_dict = {el: i for (i, el) in enumerate(self.feature_list)}
         
 
     def set_xray_lines(self, xray_lines: List[str]):
