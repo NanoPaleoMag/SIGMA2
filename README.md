@@ -2,3 +2,24 @@
 
 Updated version of Spectral Interpretation using Gaussian Mixtures and Autoencoder (SIGMA)
 
+## Installation
+
+*Currently using installation from SIGMA1 - may need changing if/when new packages are needed*
+
+1. Create a [**Python>=3.10**](https://www.python.org/) environment with [**conda**](https://docs.conda.io/en/latest/):
+```bash
+conda create -n sigma python=3.10
+conda activate sigma
+```
+
+2. Install **SIGMA** with [**pip**](https://pypi.org/project/pip/):
+```bash
+pip install emsigma
+```
+
+
+3. Use the notebook in the tutorial folder to run **SIGMA**.
+```bash
+jupyter-lab
+```
+
