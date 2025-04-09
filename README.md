@@ -12,9 +12,9 @@ conda create -n sigma python=3.10
 conda activate sigma
 ```
 
-2. Install **SIGMA** with [**pip**](https://pypi.org/project/pip/):
+2. Install the requirements from the `requirements.txt` file using [**pip**](https://pypi.org/project/pip/):
 ```bash
-pip install emsigma
+pip install -r requirements.txt
 ```
 
 
