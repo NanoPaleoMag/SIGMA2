@@ -13,7 +13,9 @@ class TEMDataset(BaseDataset):
         
         if type(self.base_dataset) == Signal2D:
             self.stem = self.base_dataset
+            
         else:
+            
             if type(self.base_dataset) == Signal1D:
                 self.spectra = hs.load(file_path, signal_type="EDS_TEM")
                 self.nav_img = Signal2D(self.spectra.data.sum(axis=2))
@@ -51,13 +53,19 @@ class TEMDataset(BaseDataset):
 				
 			#if the dataset is an EDSTEM dataset
             elif type(self.base_dataset) is EDSTEMSpectrum:
+                #print('Dataset is EDSTEMSPectrum')
                 self.nav_img=self.base_dataset.sum(axis='Energy').as_signal2D(image_axes=('x','y')) #creating a navigation image, intensity of each pixel is integrated intensity of Xrays
                 self.spectra=self.base_dataset # by default hyperspy sums over navigation axis
-		self.spectra.change_dtype("float32")
-		self.spectra_raw = self.spectra.deepcopy()
-		self.original_nav_img=self.nav_img.deepcopy()
-		self.feature_list = self.spectra.metadata.Sample.xray_lines
-		self.feature_dict = {el: i for (i, el) in enumerate(self.feature_list)}
+                self.spectra.change_dtype("float32")
+                self.spectra_raw = self.spectra.deepcopy()
+                self.original_nav_img=self.nav_img.deepcopy()
+                self.feature_list = self.spectra.metadata.Sample.xray_lines
+                self.feature_dict = {el: i for (i, el) in enumerate(self.feature_list)}
+
+            else:
+                print('WARNING - Could not Identify dataset type - some functionality may be missing')
+
+            
         
 
     def set_xray_lines(self, xray_lines: List[str]):
