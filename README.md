@@ -4,7 +4,6 @@ Updated version of Spectral Interpretation using Gaussian Mixtures and Autoencod
 
 ## Installation
 
-*Currently using installation from SIGMA1 - may need changing if/when new packages are needed*
 
 1. Create a [**Python>=3.10**](https://www.python.org/) environment with [**conda**](https://docs.conda.io/en/latest/):
 ```bash
