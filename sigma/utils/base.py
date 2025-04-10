@@ -27,6 +27,18 @@ class BaseDataset(object):
         self.feature_dict = {}
 
     def set_feature_list(self, feature_list):
+        """
+        Sets the feautre_list attribute of the BaseDataSet to the defined feature list.
+        Addst this feature list to the metadata of the spectra attribute.
+        Creates a feature_dict attributre of the Basedataset containing the X-Ray lines in feature list.
+
+        
+        Parameters
+        ----------
+        feature_list : List
+            A list containing all of the features to add to .feature_list, eg [Cu_Ka,O_Ka...]
+            
+        """
         self.feature_list = feature_list
         for s in [self.spectra, self.spectra_bin]:
             if s is not None:
@@ -35,6 +47,23 @@ class BaseDataset(object):
         print(f"Set feature_list to {self.feature_list}")
 
     def rebin_signal(self, size=(2, 2)):
+        """
+        Rebins the navigation axes of the hyperspectral image and navigation image (eg. a BSE image) contained in BaseDataSet.
+        
+
+        
+        Parameters
+        ----------
+        size : Tuple
+            A 2 element tuple of the form (x_bin,y_bin) where x_bin and y_bin define the number of pixels to sum in the x and y axis respectively
+            into a single, summed pixel in the binned signal.
+
+        Returns
+        ----------
+        (spectra_bin,nav_img_bin) : Tuple
+            The binned signals of the hyperspectral image and the navigation image
+            
+        """
         print(f"Rebinning the intensity with the size of {size}")
         x, y = size[0], size[1]
         self.spectra_bin = self.spectra.rebin(scale=(x, y, 1))
@@ -43,6 +72,18 @@ class BaseDataset(object):
         return (self.spectra_bin, self.nav_img_bin)
 
     def remove_fist_peak(self, end: float):
+        """
+        Removes the zero energy peak from the spectrum, by removing cropping the signal axis so that it begins at an energy defined by the user
+        
+
+        
+        Parameters
+        ----------
+        end : float
+            Energy, in keV, after which the signal is retained (ie. everything up to 'end' is cropped out of the signal
+            
+        """
+        
         print(
             f"Removing the fisrt peak by setting the intensity to zero until the energy of {end} keV."
         )
@@ -57,8 +98,12 @@ class BaseDataset(object):
                     spectra.isig[i] = 0
 
     def peak_intensity_normalisation(self) -> EDSSEMSpectrum:
+        """
+        Normalises the integrated intensity of the EDS signal, so that the sum along the signal axis is 1.
+            
+        """
         print(
-            "Normalising the chemical intensity along axis=2, so that the sum is wqual to 1 along axis=2."
+            "Normalising the chemical intensity along axis=2, so that the sum is equal to 1 along axis=2."
         )
         if self.spectra_bin:
             spectra_norm = self.spectra_bin
