@@ -1,3 +1,7 @@
+#doing relative imports
+import sys # for relatove imports of sigma
+sys.path.insert(0,"../..")
+
 from sigma.utils.load import SEMDataset, IMAGEDataset, PIXLDataset
 from sigma.utils.loadtem import TEMDataset
 
@@ -99,9 +103,9 @@ def plot_sum_spectrum(spectra, xray_lines=True):
 def plot_intensity_maps(spectra, element_list, colors=[], save=None):
     feature_dict = {el: i for (i, el) in enumerate(element_list)}
     num_peak = len(element_list)
-    if num_peak > 4:
-        n_rows = (num_peak + 3) // 4
-        n_cols = 4
+    if num_peak > 3:
+        n_rows = (num_peak + 2) // 3
+        n_cols = 3
     else:
         n_rows = 1
         n_cols = num_peak

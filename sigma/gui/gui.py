@@ -1,8 +1,16 @@
+#doing relative imports
+import sys # for relatove imports of sigma
+sys.path.insert(0,"../..")
+
+
+
 from sigma.utils import visualisation as visual
 from sigma.src.segmentation import PixelSegmenter
 from sigma.utils.load import SEMDataset, IMAGEDataset, PIXLDataset
 from sigma.utils.loadtem import TEMDataset
 from sigma.src.utils import k_factors_120kV
+from sigma.utils import normalisation as norm
+
 
 import os
 import random
@@ -131,19 +139,17 @@ def pick_color(plot_func, *args, **kwargs):
     colors = []
     for i in range(len(kwargs["element_list"])):
         colors.append(mpl.colors.to_hex(hsv(i / len(kwargs["element_list"]))[:3]))
-
     layout_format = Layout(width="18%", style={"description_width": "initial"})
     color_pickers = []
     for element, color in zip(kwargs["element_list"], colors):
         color_pickers.append(
-            widgets.ColorPicker(value=color, description=element, layout=layout_format)
-        )
+        widgets.ColorPicker(value=color, description=element, layout=layout_format)        )
     # Create an ouput object
     out = widgets.Output()
     with out:
         fig = visual.plot_intensity_maps(**kwargs)
         save_fig(fig)
-
+        
     def change_color(_):
         out.clear_output()
         with out:
@@ -205,7 +211,28 @@ def pick_color(plot_func, *args, **kwargs):
     display(final_box)
 
 
-def view_dataset(dataset:SEMDataset, search_energy=True):
+def view_dataset(dataset:Union[SEMDataset, TEMDataset, IMAGEDataset], search_energy=True):
+    """
+    GUI for visualisation of the dataset.
+    Shows the navigation image, the summed EDX spectum from all pixels in the dataset, and elemental maps for all features in feature list.
+
+    Includes the ability to search for X-Ray peaks by energy, and add X-Ray lines to the feature list, all within the GUI.
+
+    Tabs for visualisation include:
+    Navigation Image
+    Summed spectra
+    Raw feature maps
+    Binned feature maps (if the raw data has been binned and/or normalised)
+
+    Parameters
+    ----------
+    dataset : SEMDataset, TEMDataset, or IMAGEDataset
+              A SEM/STEM EDX dataset
+    search_energy : bool
+                    Adds the ability to search for X-Ray peaks by energy within the GUI
+
+
+    """
     if search_energy == True:
         search_energy_peak()
 
@@ -249,7 +276,7 @@ def view_dataset(dataset:SEMDataset, search_energy=True):
         else:
             default_elements += element + ", "
 
-    layout = widgets.Layout(width="600px", height="40px")
+    layout = widgets.Layout(width="400px", height="40px")
     text = widgets.Text(
         value=default_elements,
         placeholder="Type something",
@@ -328,7 +355,7 @@ def view_im_dataset(im):
         else:
             default_elements += element + ", "
 
-    layout = widgets.Layout(width="600px", height="40px")
+    layout = widgets.Layout(width="400px", height="40px")
     text = widgets.Text(
         value=default_elements,
         placeholder="Type something",
@@ -369,6 +396,17 @@ def view_im_dataset(im):
 
 
 def view_rgb(dataset:Union[SEMDataset,TEMDataset,IMAGEDataset]):
+    """
+    Function to plot the intensities of up to three X-Ray features as an RGB map.
+    The feature for each colour channel is chosen from a drop down menu within the GUI.
+
+    Parameters
+    ----------
+    dataset : SEM/TEM/IMAGE dataset containing X_ray features and (normalised) intensities to be plotted in the RGB image.
+
+
+    """
+    
     option_dict = {}
     if isinstance(dataset.normalised_elemental_data, np.ndarray):
         option_dict["normalised"] = dataset.normalised_elemental_data
@@ -451,7 +489,32 @@ def view_rgb(dataset:Union[SEMDataset,TEMDataset,IMAGEDataset]):
     display(plots_output)
 
 
-def view_pixel_distributions(dataset:Union[SEMDataset, TEMDataset, IMAGEDataset], norm_list:List=[], cmap:str="viridis"):
+def view_pixel_distributions(dataset:Union[SEMDataset, TEMDataset, IMAGEDataset], norm_list:List=[norm.neighbour_averaging,norm.zscore,norm.softmax], cmap:str="viridis"):
+    """
+    GUI for visualisation of pixel distributions as a result of normalisation processes.
+    Shows the intensity distribututions for the chosen feauture in the feature list after each normalisation step.
+    The X-Ray line to be imaged is chosen from a drop down menu within the GUI.
+
+    Tabs for visualisation include:
+    Navigation Image
+    Summed spectra
+    Raw feature maps
+    Binned feature maps (if the raw data has been binned and/or normalised)
+
+    Parameters
+    ----------
+    dataset   : SEMDataset, TEMDataset, or IMAGEDataset
+                Dataset containing the data cube that has been normalised
+       
+    norm_list : list
+                List of normalisation functions from the `normalisation.py` script. These should be in the order the data was normalised in. 
+                Default, [norm.neighbour_averaging,norm.zscore,norm.softmax] as this is the standard normalisation procedure
+                The data after each of these steps will be plotted in the gui
+                
+             
+
+
+    """
     peak_options = dataset.feature_list
     dropdown_peaks = widgets.Dropdown(options=peak_options, description="Element:")
     
@@ -1143,7 +1206,7 @@ def view_emi_dataset(tem, search_energy=True):
         else:
             default_elements += element + ", "
 
-    layout = widgets.Layout(width="600px", height="40px")
+    layout = widgets.Layout(width="400px", height="40px")
     text = widgets.Text(
         value=default_elements,
         placeholder="Type something",

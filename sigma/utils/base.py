@@ -137,6 +137,27 @@ class BaseDataset(object):
         return spectra_denoised
 
     def get_feature_maps(self, feature_list=None, raw_data:bool=False) -> np.ndarray:
+        """
+        Produces elemental / feature maps from the signal.
+
+		Parameters
+		----------
+		feature_list : string
+					   list of X-Ray lines to create elemental maps for
+
+		raw_data : bool
+				   Parameter to determine if the raw data or binned/normalised data is used to produce the feature maps. False by default
+
+		Returns
+		-------
+		data_cube : 3D numpy array
+					3D data cube, containing both navigation dimensions and an intensity for each feature in feature list.
+					The dimensions are: (length of x axis) x (length of y axis) x (number of feautures)
+
+					The 'intensity' of a feature is found from get_lines_intenisty, which returns the non-background subtracted intensity integrated over
+					twice the FWHM of the peak
+            
+        """
         if feature_list is not None:
             self.set_feature_list(feature_list)
 

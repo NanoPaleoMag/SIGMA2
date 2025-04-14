@@ -2,6 +2,22 @@ import numpy as np
 import itertools
 
 def neighbour_averaging(dataset: np) -> np:
+    """
+    Smooths the dataset by performing neighbour averaging on a 3x3 grid of pixels
+
+    Parameters
+    ----------
+    dataset : numpy array
+              3D datacube of feature intensities
+
+    Returns
+    -------
+    new_dataset : numpy array
+                  datacube after neighbour averaging has been performed
+
+
+    """
+    
     h, w = dataset.shape[0], dataset.shape[1]
     new_dataset = np.zeros(
         shape=dataset.shape
@@ -45,6 +61,20 @@ def neighbour_averaging(dataset: np) -> np:
 
 
 def zscore(dataset: np) -> np:
+    """
+    Performs z score normalisation on the data cube. For each feature in feature list.
+    The mean intensity of the pixels is shifted to 0, and the standard deviation is scaled to 1.
+
+    Parameters
+    ----------
+    dataset : numpy array
+              data cube to be normalised
+
+    Returens
+    --------
+    new_dataset : numpy array
+                  normalised dataset
+    """
     new_dataset = dataset.copy()
     for i in range(new_dataset.shape[2]):
         mean = new_dataset[:, :, i].mean()
@@ -54,6 +84,20 @@ def zscore(dataset: np) -> np:
 
 
 def softmax(dataset: np) -> np:
+    """
+    Performs softmax normalisation on the data cube. The ineneisty of each pixel in the list is scaled by the exponential function, then the data is normalised.
+    The effects of the softmax function are that maxima in the distribution are emphasised, whilst small deviations from the minimum (noise) are de-emphasised.
+
+    Parameters
+    ----------
+    dataset : numpy array
+              data cube to apply the softmax function to
+
+    Returens
+    --------
+    new_dataset : numpy array
+                  dataset after softmax function has been applied
+    """
     exp_dataset = np.exp(dataset)
     sum_exp = np.sum(exp_dataset, axis=2)
     sum_exp = np.expand_dims(sum_exp, axis=2)
