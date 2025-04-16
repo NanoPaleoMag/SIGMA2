@@ -7,7 +7,7 @@ Updated version of Spectral Interpretation using Gaussian Mixtures and Autoencod
 
 1. Create a [**Python>=3.10**](https://www.python.org/) environment with [**conda**](https://docs.conda.io/en/latest/):
 ```bash
-conda create -n sigma python=3.10
+conda create -n sigma2 python=3.10
 conda activate sigma
 ```
 
