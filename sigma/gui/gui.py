@@ -1390,6 +1390,229 @@ def plot_ternary_composition(ps:PixelSegmenter):
                               layout=Layout(flex="flex-start", width="80%",align_items='center'),)
     display(option_box)
     display(plots_output)
+
+
+    ##########################
+    #         SIGMA2         #
+    ##########################
+
+
+
+
+from plotly.subplots import make_subplots
+from ipywidgets import Button, HBox, VBox, Output
+
+
+from collections import defaultdict
+
+
+
+def interactive_latent_plot(ps, ratio_to_be_shown=0.5):
+    """
+    Interactive GUI for merging the colours of the clusters in the latent space plot.
     
+    Start by clicking the cluster(s) you wish to be rendered the samae colour.
+    
+    Pressing the 'Merge Clusters' button will re-render the plot, with these clusters being the same colour.
+    
+    Parameters
+    -----------
+    ps :                PixelSegmenter object
+                        The PixelSegmenter object to be visualised.
+         
+    ratio_to_be_shown : The proportion of points to be shown. Default = 0.5, so half the points. 
+                        Can improve rendering times by reducing this value.
+    
+    
+    
+    """
+    # Prepare colors
+    phase_colors = []
+    for i in range(ps.n_components):
+        r, g, b = cm.get_cmap(ps.color_palette)(i * (ps.n_components - 1) ** -1)[:3]
+        r, g, b = int(r * 255), int(g * 255), int(b * 255)
+        color = f'rgb({r},{g},{b})'
+        phase_colors.append(color)
+
+    latent, dataset, feature_list, labels = (
+        ps.latent,
+        ps.dataset.normalised_elemental_data,
+        ps.dataset.feature_list,
+        ps.labels,
+    )
+
+    if ratio_to_be_shown != 1.0:
+        sampled_indices = random.sample(range(latent.shape[0]), int(latent.shape[0] * ratio_to_be_shown))
+    else:
+        sampled_indices = list(range(latent.shape[0]))
+
+    df = pd.DataFrame(latent[sampled_indices], columns=["x", "y"])
+    df["cluster"] = labels.flatten()[sampled_indices]
+    df["index"] = sampled_indices
+
+    # Initialize state
+    selected_clusters = set()
+    merged_clusters = defaultdict(list)
+    current_colors = dict(zip(range(ps.n_components), phase_colors))
+
+    # Output widgets
+    out = Output()
+
+    def plot():
+        fig = go.FigureWidget()
+
+        # Apply merged cluster coloring
+        cluster_map = {}
+        color_map = {}
+        color_assignments = {}
+        cluster_id_counter = 0
+
+        for original_cluster in sorted(df['cluster'].unique()):
+            for merged_group, originals in merged_clusters.items():
+                if original_cluster in originals:
+                    cluster_map[original_cluster] = merged_group
+                    break
+            else:
+                cluster_map[original_cluster] = original_cluster
+
+        unique_merged_clusters = sorted(set(cluster_map.values()))
+        assigned_colors = {}
+        for i, mc in enumerate(unique_merged_clusters):
+            assigned_colors[mc] = f'rgb{tuple((np.array(cm.tab10(i % 10)[:3]) * 255).astype(int))}'
+
+        for original_cluster in sorted(df['cluster'].unique()):
+            merged_cluster = cluster_map[original_cluster]
+            color_map[original_cluster] = assigned_colors[merged_cluster]
+
+        # Plot each cluster
+        for cluster in sorted(df['cluster'].unique()):
+            cluster_data = df[df['cluster'] == cluster]
+            fig.add_trace(go.Scattergl(
+                x=cluster_data['x'],
+                y=cluster_data['y'],
+                mode='markers',
+                marker=dict(size=6, color=color_map[cluster]),
+                name=f"Cluster {cluster}",
+                customdata=np.stack([cluster_data['cluster'], cluster_data['index']], axis=1),
+                hovertemplate="Cluster: %{customdata[0]}<br>Index: %{customdata[1]}<extra></extra>"
+            ))
+
+        fig.update_layout(title="Interactive Latent Space",
+                          xaxis_title="Latent X",
+                          yaxis_title="Latent Y",
+                          height=600)
+        return fig
+
+    fig = plot()
+
+    def on_point_click(trace, points, selector):
+        for i in points.point_inds:
+            point_cluster = int(trace.customdata[i][0])
+            selected_clusters.add(point_cluster)
+        with out:
+            print(f"Selected clusters: {sorted(selected_clusters)}")
+
+    # Attach click callback
+    for trace in fig.data:
+        trace.on_click(on_point_click)
+
+    # Merge button
+    merge_button = Button(description="Merge Clusters")
+    def on_merge_clicked(b):
+        if not selected_clusters:
+            with out:
+                print("No clusters selected to merge.")
+            return
+    
+        # Resolve selected clusters to their current (merged) groups
+        resolved = set()
+        for cluster in selected_clusters:
+            for group_id, originals in merged_clusters.items():
+                if cluster in originals:
+                    resolved.add(group_id)
+                    break
+            else:
+                resolved.add(cluster)
+    
+        if len(resolved) <= 1:
+            with out:
+                print("Nothing to merge (already in same group?).")
+            return
+    
+        # Choose smallest ID as target
+        new_id = min(resolved)
+        new_group = set()
+        for group in resolved:
+            if group in merged_clusters:
+                new_group.update(merged_clusters.pop(group))
+            else:
+                new_group.add(group)
+        new_group.add(new_id)
+        merged_clusters[new_id] = list(sorted(new_group))
+    
+        selected_clusters.clear()
+        with out:
+            out.clear_output()
+            print(f"Merged clusters {sorted(resolved)} into cluster {new_id}")
+        update_plot()
+
+    # Reset button
+    reset_button = Button(description="Reset")
+    def on_reset_clicked(b):
+        selected_clusters.clear()
+        merged_clusters.clear()
+        with out:
+            out.clear_output()
+            print("Reset complete.")
+        update_plot()
+
+    def update_plot():
+        # Clear old traces
+        with fig.batch_update():
+            fig.data = []  # Clear existing traces
+    
+            # Recalculate cluster colors
+            cluster_map = {}
+            color_map = {}
+            cluster_id_counter = 0
+    
+            for original_cluster in sorted(df['cluster'].unique()):
+                for merged_group, originals in merged_clusters.items():
+                    if original_cluster in originals:
+                        cluster_map[original_cluster] = merged_group
+                        break
+                else:
+                    cluster_map[original_cluster] = original_cluster
+    
+            unique_merged_clusters = sorted(set(cluster_map.values()))
+            assigned_colors = {}
+            for i, mc in enumerate(unique_merged_clusters):
+                assigned_colors[mc] = f'rgb{tuple((np.array(cm.tab10(i % 10)[:3]) * 255).astype(int))}'
+    
+            for original_cluster in sorted(df['cluster'].unique()):
+                merged_cluster = cluster_map[original_cluster]
+                color = assigned_colors[merged_cluster]
+                cluster_data = df[df['cluster'] == original_cluster]
+                fig.add_trace(go.Scattergl(
+                    x=cluster_data['x'],
+                    y=cluster_data['y'],
+                    mode='markers',
+                    marker=dict(size=6, color=color),
+                    name=f"Cluster {original_cluster}",
+                    customdata=np.stack([cluster_data['cluster'], cluster_data['index']], axis=1),
+                    hovertemplate="Cluster: %{customdata[0]}<br>Index: %{customdata[1]}<extra></extra>"
+                ))
+    
+            # Reattach click handler
+            for trace in fig.data:
+                trace.on_click(on_point_click)
+
+
+    merge_button.on_click(on_merge_clicked)
+    reset_button.on_click(on_reset_clicked)
+
+    controls = HBox([merge_button, reset_button])
+    display(VBox([controls, fig, out]))
+
             
     

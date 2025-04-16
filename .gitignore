@@ -72,6 +72,9 @@ Thumbs.db
 Model*
 results/
 
+#vegafusion files#
+*_vegafusion*
+
 # STEM files
 *.emi
 *.ser
@@ -79,4 +82,5 @@ results/
 *dm3
 *dm4
 *dmw
+
 

@@ -219,7 +219,7 @@ def plot_pixel_distributions(
     fig, axs = plt.subplots(
         2,
         num_norm_process,
-        figsize=(4 * num_norm_process, 6),
+        figsize=(0.75*4 * num_norm_process, 0.75*6),
         dpi=100,
         gridspec_kw={"height_ratios": [2, 1.5]},
     )
@@ -287,3 +287,5 @@ def plot_profile(energy, intensity, peak_list):
     fig.update_layout(showlegend=False)
     fig.update_layout(template="simple_white")
     fig.show()
+
+

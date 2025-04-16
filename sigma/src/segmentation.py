@@ -1206,7 +1206,7 @@ class PixelSegmenter(object):
                 fontsize=7.5,
             )
         plt.show()
-    
+
     def plot_ternary_composition(self, **kwargs): # see args for cluster_quantification
         cluster_element_intensities = self.cluster_quantification(**kwargs)
         
@@ -1226,3 +1226,106 @@ class PixelSegmenter(object):
                           selector=dict(mode='markers'),
                          )
         fig.show()
+
+    ######################
+    # SIGMA2 imporvements#
+    ######################
+    
+    def perform_NMF(self, **kwargs):
+        """
+        Perform Non-negative Matrix Factorisation on the spectra in the clusters in the PixelSegmentor Object.
+    
+        Add these weights and components to the PixelSegmentor object under self.NMF_weights and self.NMF_components
+    
+        Parameters
+        ----------
+        **kwargs - List of arguments to be input to the 'get_unmixed_spectra_profile' method
+        """
+    
+        self.NMF_weights,self.NMF_components=self.get_unmixed_spectra_profile(**kwargs)
+
+
+
+
+    def plot_NMF_map(self, cmap=None, alpha_cluster_map=0.75):
+        """
+        Plot the NMF components alongside the navigation image.
+
+        Parameters
+        ----------
+        cmap              : str
+                            suitable matplotlib string to dfeine a colormap
+                   
+        alpha_cluster_map : float
+                            alpha value for the plot of the NMF clusters map overlayed on the navigation image. Default 0.75
+                             
+
+
+        """
+        cmap = self.color_palette if cmap is None else cmap
+        if type(self.dataset) not in [IMAGEDataset, PIXLDataset]:
+            img = self.nav_img.data 
+        else:
+            img = resize(self.dataset.intensity_map, self.dataset.chemical_maps.shape[:2])
+
+        shape = self.get_binary_map_spectra_profile(0)[0].shape
+        phase_img = np.zeros((shape[0], shape[1], self.n_components))
+
+        fig, axs = plt.subplots(nrows=1, ncols=2, sharey=True, figsize=(8, 4), dpi=100)
+        axs[1].imshow(img, cmap="gray", interpolation="none", alpha=1.0) #showing the navigation image
+
+        weights=self.NMF_weights
+
+        cpnt_names = [f'cluster_{i}' for i in range(len(weights.columns))] 
+        cpnt_options = [x for x in zip(cpnt_names, weights.columns)]
+
+
+        #showing the navigation image
+        axs[0].imshow(img, cmap="gray", interpolation="none")
+        axs[0].set_title("Navigation Signal")
+        tmp_cumulative = np.zeros(shape)
+
+        #need the inverse of the components matrix
+        for i, phase in enumerate(weights.columns):
+            print(i)
+            if phase!='None':
+                cpnt_weights = weights[phase]/weights[phase].max()
+                tmp = np.zeros(shape)
+                for j in range(self.n_components):
+                    try:
+                        idx = self.get_binary_map_spectra_profile(j)[1]
+                        tmp[idx] = cpnt_weights[j]
+                    except ValueError:
+                        pass
+                        # print(f'warning: no pixel is assigned to cpnt_{j}.')
+                phase_img[:, :, i] = tmp
+            else:
+                phase_img[:, :, i] = np.zeros(shape)
+            
+
+
+
+
+        for i in range(len(weights.columns)):
+            if len(weights) <= 10:
+                axs[1].imshow(
+                    phase_img[:,:,i],
+                    cmap=self.color_palette,
+                    interpolation="none",
+                    norm=self.color_norm,
+                    alpha=alpha_cluster_map,
+                )
+            else:
+                axs[1].imshow(
+                    phase_img[:,:,i],
+                    cmap=self.color_palette,
+                    interpolation="none",
+                    alpha=alpha_cluster_map,
+                    norm=self.color_norm,
+                )
+        axs[1].axis("off")
+        axs[1].set_title("NMF components map")
+
+        fig.subplots_adjust(wspace=0.05, hspace=0.0)
+        plt.show()
+        return fig
