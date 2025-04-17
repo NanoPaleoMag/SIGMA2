@@ -1459,6 +1459,7 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5):
     selected_clusters = set()
     merged_clusters = defaultdict(list)
     out = Output()
+    new_ps = None  # Will hold the new PixelSegmenter if created
 
     # Build initial figure widget
     fig = go.FigureWidget()
@@ -1543,6 +1544,7 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5):
 
     # Merge button
     merge_button = Button(description="Merge Clusters")
+    
     def on_merge_clicked(b):
         if not selected_clusters:
             with out:
@@ -1581,20 +1583,57 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5):
 
     # Reset button
     reset_button = Button(description="Reset")
+
     def on_reset_clicked(b):
+        nonlocal new_ps
         selected_clusters.clear()
         merged_clusters.clear()
+        new_ps = None  # Reset new object
         with out:
             out.clear_output()
             print("Reset complete.")
         plot()
 
+    # Output button
+    output_button = Button(description="Output Merged Clusters")
+
+    def on_output_clicked(b):
+        nonlocal new_ps
+        with out:
+            print('Clicked output')
+
+        if not merged_clusters:
+            with out:
+                print("No merged clusters to output.")
+            return
+        else:
+            with out:
+                print("Merging Clusters...")
+                new_labels = labels.copy()
+                for merged_id, originals in merged_clusters.items():
+                    for original in originals:
+                        new_labels[labels == original] = merged_id
+        
+                # Create a new PixelSegmenter instance
+                new_ps = PixelSegmenter(
+                    dataset=ps.dataset,
+                    latent=ps.latent)
+                new_ps.labels=new_labels
+                new_ps.n_components=len(set(new_labels.flatten()))
+                
+                print("✅ New PixelSegmenter object created!")
+
+    # Bind buttons
     merge_button.on_click(on_merge_clicked)
     reset_button.on_click(on_reset_clicked)
+    output_button.on_click(on_output_clicked)
 
     # Initial plot
     plot()
 
     # Layout
-    controls = HBox([dragmode_selector, merge_button, reset_button])
+    controls = HBox([dragmode_selector, merge_button, reset_button, output_button])
     display(VBox([controls, fig, out]))
+
+    # Return access function for new object
+    return lambda: new_ps
