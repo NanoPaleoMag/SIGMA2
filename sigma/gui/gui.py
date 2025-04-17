@@ -1400,7 +1400,7 @@ def plot_ternary_composition(ps:PixelSegmenter):
 
 
 from plotly.subplots import make_subplots
-from ipywidgets import Button, HBox, VBox, Output
+from ipywidgets import Button, HBox, VBox, Output, ToggleButtons
 
 
 from collections import defaultdict
@@ -1412,6 +1412,8 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5):
     Interactive GUI for merging the colours of the clusters in the latent space plot.
     
     Start by clicking the cluster(s) you wish to be rendered the samae colour.
+    
+    Also allows clusters to be selected using lasso/rectangle tool
     
     Pressing the 'Merge Clusters' button will re-render the plot, with these clusters being the same colour.
     
@@ -1426,7 +1428,8 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5):
     
     
     """
-    # Prepare colors
+    
+    # Generate color palette
     phase_colors = []
     for i in range(ps.n_components):
         r, g, b = cm.get_cmap(ps.color_palette)(i * (ps.n_components - 1) ** -1)[:3]
@@ -1434,6 +1437,7 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5):
         color = f'rgb({r},{g},{b})'
         phase_colors.append(color)
 
+    # Extract relevant data
     latent, dataset, feature_list, labels = (
         ps.latent,
         ps.dataset.normalised_elemental_data,
@@ -1441,6 +1445,7 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5):
         ps.labels,
     )
 
+    # Subsample if requested
     if ratio_to_be_shown != 1.0:
         sampled_indices = random.sample(range(latent.shape[0]), int(latent.shape[0] * ratio_to_be_shown))
     else:
@@ -1450,71 +1455,91 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5):
     df["cluster"] = labels.flatten()[sampled_indices]
     df["index"] = sampled_indices
 
-    # Initialize state
+    # State tracking
     selected_clusters = set()
     merged_clusters = defaultdict(list)
-    current_colors = dict(zip(range(ps.n_components), phase_colors))
-
-    # Output widgets
     out = Output()
 
+    # Build initial figure widget
+    fig = go.FigureWidget()
+    fig.update_layout(
+        title="Interactive Latent Space",
+        xaxis_title="Latent X",
+        yaxis_title="Latent Y",
+        height=600,
+        dragmode="lasso",  # Default to lasso
+        selectdirection="any"
+    )
+
+    # UI element to switch between lasso and box
+    dragmode_selector = ToggleButtons(
+        options=["lasso", "select"],
+        description="Tool:",
+        value="lasso",
+        style={"button_width": "80px"}
+    )
+
+    def on_dragmode_change(change):
+        fig.update_layout(dragmode=change["new"])
+
+    dragmode_selector.observe(on_dragmode_change, names="value")
+
+    # Helper to regenerate the plot with merged colors
     def plot():
-        fig = go.FigureWidget()
+        with fig.batch_update():
+            fig.data = []  # Clear existing traces
 
-        # Apply merged cluster coloring
-        cluster_map = {}
-        color_map = {}
-        color_assignments = {}
-        cluster_id_counter = 0
+            # Remap clusters based on merged state
+            cluster_map = {}
+            for original_cluster in sorted(df['cluster'].unique()):
+                for group_id, originals in merged_clusters.items():
+                    if original_cluster in originals:
+                        cluster_map[original_cluster] = group_id
+                        break
+                else:
+                    cluster_map[original_cluster] = original_cluster
 
-        for original_cluster in sorted(df['cluster'].unique()):
-            for merged_group, originals in merged_clusters.items():
-                if original_cluster in originals:
-                    cluster_map[original_cluster] = merged_group
-                    break
-            else:
-                cluster_map[original_cluster] = original_cluster
+            unique_merged_clusters = sorted(set(cluster_map.values()))
+            assigned_colors = {
+                mc: f'rgb{tuple((np.array(cm.tab10(i % 10)[:3]) * 255).astype(int))}'
+                for i, mc in enumerate(unique_merged_clusters)
+            }
 
-        unique_merged_clusters = sorted(set(cluster_map.values()))
-        assigned_colors = {}
-        for i, mc in enumerate(unique_merged_clusters):
-            assigned_colors[mc] = f'rgb{tuple((np.array(cm.tab10(i % 10)[:3]) * 255).astype(int))}'
+            for cluster in sorted(df['cluster'].unique()):
+                merged_cluster = cluster_map[cluster]
+                color = assigned_colors[merged_cluster]
+                cluster_data = df[df['cluster'] == cluster]
+                fig.add_trace(go.Scattergl(
+                    x=cluster_data['x'],
+                    y=cluster_data['y'],
+                    mode='markers',
+                    marker=dict(size=6, color=color),
+                    name=f"Cluster {cluster}",
+                    customdata=np.stack([cluster_data['cluster'], cluster_data['index']], axis=1),
+                    hovertemplate="Cluster: %{customdata[0]}<br>Index: %{customdata[1]}<extra></extra>"
+                ))
 
-        for original_cluster in sorted(df['cluster'].unique()):
-            merged_cluster = cluster_map[original_cluster]
-            color_map[original_cluster] = assigned_colors[merged_cluster]
+            # Reattach interactions
+            for trace in fig.data:
+                trace.on_click(on_point_click)
+                trace.on_selection(on_select)
 
-        # Plot each cluster
-        for cluster in sorted(df['cluster'].unique()):
-            cluster_data = df[df['cluster'] == cluster]
-            fig.add_trace(go.Scattergl(
-                x=cluster_data['x'],
-                y=cluster_data['y'],
-                mode='markers',
-                marker=dict(size=6, color=color_map[cluster]),
-                name=f"Cluster {cluster}",
-                customdata=np.stack([cluster_data['cluster'], cluster_data['index']], axis=1),
-                hovertemplate="Cluster: %{customdata[0]}<br>Index: %{customdata[1]}<extra></extra>"
-            ))
-
-        fig.update_layout(title="Interactive Latent Space",
-                          xaxis_title="Latent X",
-                          yaxis_title="Latent Y",
-                          height=600)
-        return fig
-
-    fig = plot()
-
+    # Click handler
     def on_point_click(trace, points, selector):
         for i in points.point_inds:
-            point_cluster = int(trace.customdata[i][0])
-            selected_clusters.add(point_cluster)
+            cluster_id = int(trace.customdata[i][0])
+            selected_clusters.add(cluster_id)
         with out:
-            print(f"Selected clusters: {sorted(selected_clusters)}")
+            print(f"Clicked cluster(s): {sorted(selected_clusters)}")
 
-    # Attach click callback
-    for trace in fig.data:
-        trace.on_click(on_point_click)
+    # Selection handler (lasso or rectangle)
+    def on_select(trace, points, selector):
+        if not points.point_inds:
+            return
+        selected = set(int(trace.customdata[i][0]) for i in points.point_inds)
+        selected_clusters.update(selected)
+        with out:
+            print(f"Lasso/Box selected clusters: {sorted(selected_clusters)}")
 
     # Merge button
     merge_button = Button(description="Merge Clusters")
@@ -1523,8 +1548,7 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5):
             with out:
                 print("No clusters selected to merge.")
             return
-    
-        # Resolve selected clusters to their current (merged) groups
+
         resolved = set()
         for cluster in selected_clusters:
             for group_id, originals in merged_clusters.items():
@@ -1533,13 +1557,12 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5):
                     break
             else:
                 resolved.add(cluster)
-    
+
         if len(resolved) <= 1:
             with out:
                 print("Nothing to merge (already in same group?).")
             return
-    
-        # Choose smallest ID as target
+
         new_id = min(resolved)
         new_group = set()
         for group in resolved:
@@ -1549,12 +1572,12 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5):
                 new_group.add(group)
         new_group.add(new_id)
         merged_clusters[new_id] = list(sorted(new_group))
-    
+
         selected_clusters.clear()
         with out:
             out.clear_output()
             print(f"Merged clusters {sorted(resolved)} into cluster {new_id}")
-        update_plot()
+        plot()
 
     # Reset button
     reset_button = Button(description="Reset")
@@ -1564,55 +1587,14 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5):
         with out:
             out.clear_output()
             print("Reset complete.")
-        update_plot()
-
-    def update_plot():
-        # Clear old traces
-        with fig.batch_update():
-            fig.data = []  # Clear existing traces
-    
-            # Recalculate cluster colors
-            cluster_map = {}
-            color_map = {}
-            cluster_id_counter = 0
-    
-            for original_cluster in sorted(df['cluster'].unique()):
-                for merged_group, originals in merged_clusters.items():
-                    if original_cluster in originals:
-                        cluster_map[original_cluster] = merged_group
-                        break
-                else:
-                    cluster_map[original_cluster] = original_cluster
-    
-            unique_merged_clusters = sorted(set(cluster_map.values()))
-            assigned_colors = {}
-            for i, mc in enumerate(unique_merged_clusters):
-                assigned_colors[mc] = f'rgb{tuple((np.array(cm.tab10(i % 10)[:3]) * 255).astype(int))}'
-    
-            for original_cluster in sorted(df['cluster'].unique()):
-                merged_cluster = cluster_map[original_cluster]
-                color = assigned_colors[merged_cluster]
-                cluster_data = df[df['cluster'] == original_cluster]
-                fig.add_trace(go.Scattergl(
-                    x=cluster_data['x'],
-                    y=cluster_data['y'],
-                    mode='markers',
-                    marker=dict(size=6, color=color),
-                    name=f"Cluster {original_cluster}",
-                    customdata=np.stack([cluster_data['cluster'], cluster_data['index']], axis=1),
-                    hovertemplate="Cluster: %{customdata[0]}<br>Index: %{customdata[1]}<extra></extra>"
-                ))
-    
-            # Reattach click handler
-            for trace in fig.data:
-                trace.on_click(on_point_click)
-
+        plot()
 
     merge_button.on_click(on_merge_clicked)
     reset_button.on_click(on_reset_clicked)
 
-    controls = HBox([merge_button, reset_button])
-    display(VBox([controls, fig, out]))
+    # Initial plot
+    plot()
 
-            
-    
+    # Layout
+    controls = HBox([dragmode_selector, merge_button, reset_button])
+    display(VBox([controls, fig, out]))
