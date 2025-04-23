@@ -108,3 +108,261 @@ class PIXLDataset(IMAGEDataset):
         
         self.feature_list = self.base_dataset.metadata.Signal.phases
         self.feature_dict = {el: i for (i, el) in enumerate(self.feature_list)}
+
+
+class AZTECDataset(object):
+    """
+    Object, similar to BaseDataSet, but does not initialise from a file path, instead intitialises from a hypserpsy signal
+    """
+    
+    def __init__(self, hs_signal):
+        self.base_dataset = hs_signal
+        self.nav_img = None
+        self.spectra = None
+        self.original_nav_img = None
+        self.original_spectra = None
+        self.nav_img_bin = None
+        self.spectra_bin = None
+        self.spectra_raw = None
+        self.feature_list = []
+        self.feature_dict = {}
+
+    def set_feature_list(self, feature_list):
+        """
+        Sets the feautre_list attribute of the BaseDataSet to the defined feature list.
+        Addst this feature list to the metadata of the spectra attribute.
+        Creates a feature_dict attributre of the Basedataset containing the X-Ray lines in feature list.
+
+        
+        Parameters
+        ----------
+        feature_list : List
+            A list containing all of the features to add to .feature_list, eg [Cu_Ka,O_Ka...]
+            
+        """
+        self.feature_list = feature_list
+        for s in [self.spectra, self.spectra_bin]:
+            if s is not None:
+                s.metadata.Sample.xray_lines = self.feature_list
+        self.feature_dict = {el: i for (i, el) in enumerate(feature_list)}
+        print(f"Set feature_list to {self.feature_list}")
+
+    def rebin_signal(self, size=(2, 2)):
+        """
+        Rebins the navigation axes of the hyperspectral image and navigation image (eg. a BSE image) contained in BaseDataSet.
+        
+
+        
+        Parameters
+        ----------
+        size : Tuple
+            A 2 element tuple of the form (x_bin,y_bin) where x_bin and y_bin define the number of pixels to sum in the x and y axis respectively
+            into a single, summed pixel in the binned signal.
+
+        Returns
+        ----------
+        (spectra_bin,nav_img_bin) : Tuple
+            The binned signals of the hyperspectral image and the navigation image
+            
+        """
+        print(f"Rebinning the intensity with the size of {size}")
+        x, y = size[0], size[1]
+        self.spectra_bin = self.spectra.rebin(scale=(x, y, 1))
+        self.nav_img_bin = self.nav_img.rebin(scale=(x, y))
+        self.spectra_raw = self.spectra_bin.deepcopy()
+        return (self.spectra_bin, self.nav_img_bin)
+
+    def remove_fist_peak(self, end: float):
+        """
+        Removes the zero energy peak from the spectrum, by removing cropping the signal axis so that it begins at an energy defined by the user
+        
+
+        
+        Parameters
+        ----------
+        end : float
+            Energy, in keV, after which the signal is retained (ie. everything up to 'end' is cropped out of the signal
+            
+        """
+        
+        print(
+            f"Removing the fisrt peak by setting the intensity to zero until the energy of {end} keV."
+        )
+        for spectra in (self.spectra, self.spectra_bin):
+            if spectra is None:
+                continue
+            else:
+                scale = spectra.axes_manager[2].scale
+                offset = spectra.axes_manager[2].offset
+                end_ = int((end - offset) / scale)
+                for i in range(end_):
+                    spectra.isig[i] = 0
+
+    def peak_intensity_normalisation(self) -> EDSSEMSpectrum:
+        """
+        Normalises the integrated intensity of the EDS signal, so that the sum along the signal axis is 1.
+            
+        """
+        print(
+            "Normalising the chemical intensity along axis=2, so that the sum is equal to 1 along axis=2."
+        )
+        if self.spectra_bin:
+            spectra_norm = self.spectra_bin
+        else:
+            spectra_norm = self.spectra
+        spectra_norm.data = spectra_norm.data / spectra_norm.data.sum(axis=2, keepdims=True)
+        if np.isnan(np.sum(spectra_norm.data)):
+            spectra_norm.data = np.nan_to_num(spectra_norm.data)
+        return spectra_norm
+
+    def peak_denoising_PCA(
+        self, n_components_to_reconstruct=10, plot_results=True
+    ) -> EDSSEMSpectrum:
+        print("Peak denoising using PCA.")
+        if self.spectra_bin:
+            spectra_denoised = self.spectra_bin
+        else:
+            spectra_denoised = self.spectra
+        spectra_denoised.decomposition(
+            normalize_poissonian_noise=True,
+            algorithm="SVD",
+            random_state=0,
+            output_dimension=n_components_to_reconstruct,
+        )
+
+        if plot_results == True:
+            spectra_denoised.plot_decomposition_results()
+            spectra_denoised.plot_explained_variance_ratio(log=True)
+            spectra_denoised.plot_decomposition_factors(comp_ids=4)
+
+        return spectra_denoised
+
+    def get_feature_maps(self, feature_list=None) -> np.ndarray:
+        """
+        Produces elemental / feature maps for the EmptyDataset object, that was initialised with a hyperspy.signal1d object where the signal dimension is the intensity of each elemental map.
+
+		Parameters
+		----------
+		feature_list : string
+					   list of X-Ray lines to create elemental maps for
+
+
+		Returns
+		-------
+		data_cube : 3D numpy array
+					3D data cube, containing both navigation dimensions and an intensity for each feature in feature list.
+					The dimensions are: (length of x axis) x (length of y axis) x (number of feautures)
+
+        """
+        
+        data_cube=self.base_dataset.data 
+        
+
+        return data_cube
+
+    def normalisation(self, norm_list=[]):
+        self.normalised_elemental_data = self.get_feature_maps(self.feature_list)
+        print("Normalise dataset using:")
+        for i, norm_process in enumerate(norm_list):
+            print(f"    {i+1}. {norm_process.__name__}")
+            self.normalised_elemental_data = norm_process(
+                self.normalised_elemental_data
+            )
+	
+
+
+import h5py
+
+def clean_metadata(md):
+    """
+    Function for cleaning metadata, useful for reading .h5oina files.
+    
+    Removes any 'bytes' parts from the metadata so it can be saved as hdf5 file
+    
+    Pararameters
+    ------------
+    md : dictionary, containing metadata from a h5oina file
+    
+    Returns
+    --------
+    cleaned : dictionary, contains the cleaned metadata
+    """
+    
+    cleaned = {}
+    for k, v in md.items():
+        if isinstance(v, bytes):
+            try:
+                v = v.decode('utf-8')
+            except UnicodeDecodeError:
+                continue  # skip if undecodable
+        elif isinstance(v, np.ndarray):
+            try:
+                v = v.item()  # convert 0-d arrays to scalars
+            except:
+                continue  # skip if it fails
+        elif isinstance(v, (dict, list, tuple)):
+            continue  # skip complex types
+        cleaned[k] = v
+    return cleaned
+ 
+def load_AZTEC(input_file,y_dim=1024):
+    """
+    Function for loading a .h5oina file to a BaseDataset objet
+    
+    Parameters
+    -----------
+    input_file : str
+                 path pointing to the input .h5oina file
+               
+    y_dim : int, default=1024. The number of pixels in the actual y axis. Needed if the plot is read (by deafault) as a 1D linescan like object.
+    
+    
+    Returns
+    -------
+    Aztec_data : BaseDataset like object, though will not have a signal axis. Should have a nav_img and elemental_maps objects.
+    
+    
+    """
+    # === Open file ===
+    with h5py.File(input_file, 'r') as f:
+        win_int_path = "1/EDS/Data/Window Integral"
+        element_names = list(f[win_int_path].keys())
+        
+        # Load maps
+        maps = [f[f"{win_int_path}/{el}"][:] for el in element_names]
+        data = np.stack(maps, axis=0)  # Shape: (elements, Y, X)
+        
+        # Transpose to match HyperSpy: (Y, X, elements)
+        data = np.moveaxis(data, 0, -1)
+
+        # Axis scaling from metadata
+        x_scale = f["1/EDS/Header/X Step"][()]
+        y_scale = f["1/EDS/Header/Y Step"][()]
+
+        # Metadata
+        metadata = {}
+        for key in f["1/EDS/Header"].keys():
+            try:
+                val = f[f"1/EDS/Header/{key}"][()]
+                if isinstance(val, bytes):
+                    val = val.decode('utf-8')
+                metadata[key] = val
+            except:
+                pass
+                
+    # === Create HyperSpy signal ===
+    s_tmp = hs.signals.Signal2D(data,dtype='float32') # creating a temporary file that contains all of the data but is the wrong shape
+    s=hs.signals.Signal1D(s_tmp.data.reshape(int(len(s_tmp.as_signal1D(spectral_axis=0).data)/y_dim),y_dim,len(maps)),dtype='float32')
+    del(s_tmp) #removing the temporary variable from memory 
+    #creating an AZtec dataset Signal object
+    aztec_data=AZTECDataset(s)
+    #creating the navigation image
+    aztec_data.nav_img=s.sum(axis=2) 
+   
+    #creating the feature_list
+    aztec_data.feature_list=element_names
+    
+    aztec_data.spectra=s.data
+    return aztec_data
+    
+

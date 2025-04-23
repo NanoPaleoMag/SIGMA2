@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from sigma.utils.load import SEMDataset, IMAGEDataset, PIXLDataset
+from sigma.utils.load import SEMDataset, IMAGEDataset, PIXLDataset, AZTECDataset
 from sigma.utils.loadtem import TEMDataset
 from sigma.utils.visualisation import make_colormap
 from sigma.src.utils import k_factors_120kV
@@ -55,12 +55,12 @@ class PixelSegmenter(object):
                 self.nav_img = self.dataset.nav_img_bin
             else:
                 self.nav_img = self.dataset.nav_img
-
-            ### Get energy_axis ###
-            size = self.spectra.axes_manager[2].size
-            scale = self.spectra.axes_manager[2].scale
-            offset = self.spectra.axes_manager[2].offset
-            self.energy_axis = [((a * scale) + offset) for a in range(0, size)]
+            if type(dataset)!=AZTECDataset:
+                ### Get energy_axis ###
+                size = self.spectra.axes_manager[2].size
+                scale = self.spectra.axes_manager[2].scale
+                offset = self.spectra.axes_manager[2].offset
+                self.energy_axis = [((a * scale) + offset) for a in range(0, size)]
 
         ### Train the model ###
         if self.method == "GaussianMixture":
