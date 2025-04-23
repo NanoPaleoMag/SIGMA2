@@ -1492,7 +1492,7 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5):
     # Helper to regenerate the plot with merged colors
     def plot():
         with fig.batch_update():
-            fig.data = []  # Clear existing traces
+            fig.data = []  # Clear previous data
 
             # Remap clusters based on merged state
             cluster_map = {}
@@ -1504,27 +1504,24 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5):
                 else:
                     cluster_map[original_cluster] = original_cluster
 
-            unique_merged_clusters = sorted(set(cluster_map.values()))
-            assigned_colors = {mc: get_color(mc) for mc in unique_merged_clusters}
+            merged_ids = df['cluster'].map(cluster_map)
+            colors = merged_ids.map(get_color)
 
-            for cluster in sorted(df['cluster'].unique()):
-                merged_cluster = cluster_map[cluster]
-                color = assigned_colors[merged_cluster]
-                cluster_data = df[df['cluster'] == cluster]
-                fig.add_trace(go.Scattergl(
-                    x=cluster_data['x'],
-                    y=cluster_data['y'],
-                    mode='markers',
-                    marker=dict(size=6, color=color),
-                    name=f"Cluster {cluster}",
-                    customdata=np.stack([cluster_data['cluster'], cluster_data['index']], axis=1),
-                    hovertemplate="Cluster: %{customdata[0]}<br>Index: %{customdata[1]}<extra></extra>"
-                ))
+            # Single trace plot
+            fig.add_trace(go.Scattergl(
+                x=df['x'],
+                y=df['y'],
+                mode='markers',
+                marker=dict(size=6, color=colors),
+                name='Clusters',
+                customdata=np.stack([df['cluster'], df['index']], axis=1),
+                hovertemplate="Cluster: %{customdata[0]}<br>Index: %{customdata[1]}<extra></extra>"
+            ))
 
-            # Reattach interactions
-            for trace in fig.data:
-                trace.on_click(on_point_click)
-                trace.on_selection(on_select)
+            # Reattach interactivity
+            trace = fig.data[0]
+            trace.on_click(on_point_click)
+            trace.on_selection(on_select)
 
     # Click handler
     def on_point_click(trace, points, selector):
