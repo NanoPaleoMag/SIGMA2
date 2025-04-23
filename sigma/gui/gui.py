@@ -1429,13 +1429,17 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5):
     
     """
     
-    # Generate color palette
-    phase_colors = []
-    for i in range(ps.n_components):
-        r, g, b = cm.get_cmap(ps.color_palette)(i * (ps.n_components - 1) ** -1)[:3]
-        r, g, b = int(r * 255), int(g * 255), int(b * 255)
-        color = f'rgb({r},{g},{b})'
-        phase_colors.append(color)
+    from matplotlib import cm
+
+    # Get the colormap and normalization
+    cmap = cm.get_cmap(ps.color_palette)
+    norm = ps.color_norm
+
+    # Map cluster IDs to RGB strings using the same colormap and normalization as the PixelSegmenter
+    def get_color(cluster_id):
+        r, g, b, _ = cmap(norm(cluster_id))
+        return f'rgb({int(r*255)}, {int(g*255)}, {int(b*255)})'
+
 
     # Extract relevant data
     latent, dataset, feature_list, labels = (
@@ -1501,10 +1505,7 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5):
                     cluster_map[original_cluster] = original_cluster
 
             unique_merged_clusters = sorted(set(cluster_map.values()))
-            assigned_colors = {
-                mc: f'rgb{tuple((np.array(cm.tab10(i % 10)[:3]) * 255).astype(int))}'
-                for i, mc in enumerate(unique_merged_clusters)
-            }
+            assigned_colors = {mc: get_color(mc) for mc in unique_merged_clusters}
 
             for cluster in sorted(df['cluster'].unique()):
                 merged_cluster = cluster_map[cluster]
