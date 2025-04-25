@@ -1521,6 +1521,9 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
     manual_cluster_colors = {}  # cluster_id -> RGB string
     original_palette='%s' % ps.color_palette #copying the original color palette
     
+    original_labels = ps.labels.copy()
+
+    
     #for creating new clusters
     selected_point_indices = set()  # for new cluster selection
     new_cluster_mode = [False]  # wrapped in list for mutability
@@ -1606,18 +1609,6 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
     zerolinecolor='lightgrey'
     )
 
-    # UI element to switch between lasso and box
-    dragmode_selector = ToggleButtons(
-        options=["lasso", "select"],
-        description="Tool:",
-        value="lasso",
-        style={"button_width": "80px"}
-    )
-
-    def on_dragmode_change(change):
-        fig.update_layout(dragmode=change["new"])
-
-    dragmode_selector.observe(on_dragmode_change, names="value")
 
     # Helper to regenerate the plot with merged colors
     def plot():
@@ -1806,30 +1797,46 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
 
 
     def on_reset_clicked(b):
-        nonlocal new_ps
+        confirm_out.clear_output()
+        
+        with confirm_out:
+            print("⚠️ Are you sure you want to reset everything?")
+            confirm = Button(description="Yes, Reset", button_style='danger')
+            cancel = Button(description="Cancel", button_style='info')
+            
+            def do_reset(btn):
+                nonlocal new_ps, labels
 
-        with out:
-            print('Reset Clicked')
+                selected_clusters.clear()
+                merged_clusters.clear()
+                manual_cluster_colors.clear()
+                new_ps = None
 
-        selected_clusters.clear()
-        merged_clusters.clear()
-        manual_cluster_colors.clear()  # clear recolorings
-        new_ps = None
+                ps.color_palette = original_palette
+                ps.cluster_colors = original_cluster_colors.copy()
 
-        ps.color_palette = original_palette  # restore palette
-        ps.cluster_colors = original_cluster_colors.copy()  # 🔥 use saved original
+                # Reset labels
+                ps.labels = original_labels.copy()
+                labels = ps.labels  # local reference
+                ps.n_components = len(set(labels.flatten()))
 
-        with out:
-            out.clear_output()
-            print("✅ Reset complete. Cluster colors restored to the original palette.")
+                fig.data = []
+                confirm_out.clear_output()
+                out.clear_output()
+                print("✅ Full reset complete. All cluster assignments and colors reverted.")
 
-        fig.data = []
-        plot()
+                plot()
 
-        with out:
-            print("Plot has been refreshed.")
+            def cancel_reset(btn):
+                confirm_out.clear_output()
+                with out:
+                    out.clear_output()
+                    print("❎ Reset cancelled.")
 
+            confirm.on_click(do_reset)
+            cancel.on_click(cancel_reset)
 
+            display(HBox([confirm, cancel]))
 
 
     # Output button
@@ -1911,8 +1918,18 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
             out.clear_output()
             print("✅ Recolored selected clusters.")
         plot()
+        
+    clear_selection_button = Button(description="Clear Selection")
+        
+    def on_clear_selection_clicked(b):
+        selected_clusters.clear()
+        with out:
+            out.clear_output()
+            print("🧼 Cleared selected clusters.")
+
 
     
+    confirm_out = Output()
 
 
 
@@ -1923,6 +1940,7 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
     recolor_button.on_click(on_recolor_clicked)
     select_points_button.on_click(on_select_points_clicked)
     create_cluster_button.on_click(on_create_cluster_clicked)
+    clear_selection_button.on_click(on_clear_selection_clicked)
 
 
     # Initial plot
@@ -1930,9 +1948,9 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
 
     # Layout
     controls = HBox([
-        dragmode_selector, 
+        reset_button,
+        clear_selection_button,
         merge_button, 
-        reset_button, 
         output_button, 
         recolor_button,
         select_points_button,
@@ -1940,7 +1958,7 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
         include_noise_toggle
     ])
 
-    display(VBox([controls, *color_selector_ui, fig, out]))
+    display(VBox([controls, *color_selector_ui, fig, confirm_out, out]))
 
 
     # Return access function for new object
