@@ -19,6 +19,6 @@ pip install -r requirements.txt
 
 3. Use the notebook in the tutorial folder to run **SIGMA**.
 ```bash
-jupyter-lab
+jupyter lab
 ```
 
