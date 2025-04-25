@@ -744,29 +744,47 @@ def check_latent_space(ps: PixelSegmenter, ratio_to_be_shown=0.25, show_map=Fals
     )
 
     # Points
-    points = (
+    # Base layer: all points (dimmed, small)
+    points_base = (
         alt.Chart(source)
-        .mark_circle(size=3,)
+        .mark_circle(size=3)
         .encode(
             x="x:Q",
-            y="y:Q",  # use min extent to stabilize axis title placement
-            color=alt.Color(
-                "Cluster_id:N", scale=alt.Scale(domain=domain, range=range_)
-            ),
-            opacity=alt.condition(brush, alt.value(0.9), alt.value(0.1)),
+            y="y:Q",
+            color=alt.Color("Cluster_id:N", scale=alt.Scale(domain=domain, range=range_)),
+            opacity=alt.value(0.2)
+        )
+    )
+
+    # Highlight layer: selected points (larger, bright)
+    points_selected = (
+        alt.Chart(source)
+        .mark_circle(size=20)
+        .encode(
+            x="x:Q",
+            y="y:Q",
+            color=alt.Color("Cluster_id:N", scale=alt.Scale(domain=domain, range=range_)),
+            opacity=alt.condition(brush, alt.value(1.0), alt.value(0.0)),
             tooltip=[
                 "Cluster_id:N",
                 alt.Tooltip("x:Q", format=",.2f"),
                 alt.Tooltip("y:Q", format=",.2f"),
             ],
         )
-        .properties(width=450, height=450)
-        .properties(title=alt.TitleParams(text="Latent space"))
-        .add_selection(
-            brush,
-            interaction
-            )
     )
+
+    # Combine and add selections
+    points = (
+        (points_base + points_selected)
+        .add_selection(brush, interaction)
+        .properties(
+            width=450,
+            height=450,
+            title=alt.TitleParams(text="Latent space")
+        )
+    )
+
+
 
     # Base chart for data tables
     ranked_text = alt.Chart(source).mark_bar().transform_filter(brush)
