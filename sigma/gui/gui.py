@@ -1517,12 +1517,14 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
 
     
     def get_color(cid):
-        # Try manual override, then ps.cluster_colors, then fallback to original
+        if cid == -1:
+            return '#999999'  # Dim gray for noise
         return (
             manual_cluster_colors.get(cid)
             or ps.cluster_colors.get(cid)
-            or original_cluster_colors.get(cid, '#cccccc')  # Final fallback
+            or original_cluster_colors.get(cid, '#cccccc')
         )
+
 
 
     # Get the colormap and normalization
@@ -1637,7 +1639,15 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
     def on_point_click(trace, points, selector):
         for i in points.point_inds:
             cluster_id = int(trace.customdata[i][0])
+
+            # Skip noise (cluster -1)
+            if cluster_id == -1:
+                continue  # Ignore noise cluster (-1)
+
+            # Add valid cluster IDs to the selected_clusters set
             selected_clusters.add(cluster_id)
+
+        # Print out the selected clusters, excluding noise
         with out:
             print(f"Clicked cluster(s): {sorted(selected_clusters)}")
 
@@ -1653,10 +1663,19 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
     # Merge button
     merge_button = Button(description="Merge Clusters")
     
+
     def on_merge_clicked(b):
         if not selected_clusters:
             with out:
                 print("No clusters selected to merge.")
+            return
+
+        # Skip noise cluster (-1) from selection
+        selected_clusters = {cluster for cluster in selected_clusters if cluster != -1}
+
+        if not selected_clusters:  # If no clusters are left after excluding noise
+            with out:
+                print("No valid clusters selected (all were noise clusters).")
             return
 
         resolved = set()
@@ -1688,6 +1707,7 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
             out.clear_output()
             print(f"Merged clusters {sorted(resolved)} into cluster {new_id}")
         plot()
+
 
     # Reset button
     reset_button = Button(description="Reset")
@@ -1789,18 +1809,19 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
             return
 
         for cluster_id in selected_clusters:
+            if cluster_id == -1:
+                continue  # Skip noise cluster (-1)
+            
+            # Recolor the valid clusters
             manual_cluster_colors[cluster_id] = selected_color[0]
             ps.cluster_colors[cluster_id] = selected_color[0]
             
-        
-            
-
-        selected_clusters.clear()  # clear selection to avoid recoloring again
+        selected_clusters.clear()  # Clear selection to avoid recoloring again
         with out:
             out.clear_output()
             print("✅ Recolored selected clusters.")
         plot()
-        
+
     
 
 
