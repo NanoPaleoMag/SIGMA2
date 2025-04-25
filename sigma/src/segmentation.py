@@ -848,7 +848,9 @@ class PixelSegmenter(object):
         return fig
 
     def plot_phase_map(self, cmap=None, alpha_cluster_map=0.75):
-        cmap = self.color_palette if cmap is None else cmap
+        # If no cmap is provided, fall back to self.color_palette
+        cmap = cmap or self.color_palette
+
         if type(self.dataset) not in [IMAGEDataset, PIXLDataset]:
             img = self.nav_img.data 
         else:
@@ -860,27 +862,19 @@ class PixelSegmenter(object):
 
         axs[0].imshow(img, cmap="gray", interpolation="none")
         axs[0].set_title("Navigation Signal")
-
         axs[0].axis("off")
 
         axs[1].imshow(img, cmap="gray", interpolation="none", alpha=1.0)
 
-        if self.n_components <= 10:
-            axs[1].imshow(
-                phase,
-                cmap=self.color_palette,
-                interpolation="none",
-                norm=self.color_norm,
-                alpha=alpha_cluster_map,
-            )
-        else:
-            axs[1].imshow(
-                phase,
-                cmap=self.color_palette,
-                interpolation="none",
-                alpha=alpha_cluster_map,
-                norm=self.color_norm,
-            )
+        # This part now respects the passed-in cmap!
+        axs[1].imshow(
+            phase,
+            cmap=cmap,  # <- this now uses the passed-in value
+            interpolation="none",
+            norm=self.color_norm,
+            alpha=alpha_cluster_map,
+        )
+        
         axs[1].axis("off")
         axs[1].set_title("Cluster map")
 

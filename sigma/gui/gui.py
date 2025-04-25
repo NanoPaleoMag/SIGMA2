@@ -855,54 +855,101 @@ def show_cluster_distribution(ps: PixelSegmenter, **kwargs):
     save_fig(all_fig)
     display(plots_output)
 
+#sigma2 improvement
+#need a helper function to aid with plotting in view_phase_map
+import re
+
+def parse_rgb_string(s):
+    """Convert 'rgb(r, g, b)' or 'rgba(r, g, b, a)' string into RGB tuple (0-1 range)."""
+    match = re.match(r"rgba?\(([\d\s.,]+)\)", s)
+    if match:
+        parts = [float(x.strip()) for x in match.group(1).split(",")]
+        if len(parts) >= 3:
+            return tuple(p / 255.0 for p in parts[:3])
+    raise ValueError(f"Invalid RGB string: {s}")
+
+
 
 def view_phase_map(ps, alpha_cluster_map=0.6):
-    colors = []
-    cmap = plt.get_cmap(ps.color_palette)
-    for i in range(ps.n_components):
-        colors.append(mpl.colors.to_hex(cmap(i * (ps.n_components - 1) ** -1)[:3]))
+    import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
+    from matplotlib.colors import ListedColormap
+
+    # Get cluster labels excluding -1
+    valid_labels = sorted([label for label in set(ps.labels) if label != -1])
+
+    # Use ps.cluster_colors if available, fallback to default color_palette
+    use_cluster_colors = hasattr(ps, "cluster_colors") and ps.cluster_colors
+    if use_cluster_colors:
+        # Clean colors: convert to hex if necessary
+        cluster_color_list = []
+        for label in valid_labels:
+            raw_color = ps.cluster_colors.get(label, "#000000")
+            try:
+                rgb = mcolors.to_rgb(raw_color)
+            except ValueError:
+                rgb = parse_rgb_string(raw_color)
+            cluster_color_list.append(mcolors.to_hex(rgb))
+
+    else:
+        # Fall back to default color palette using current cmap
+        cmap = plt.get_cmap(ps.color_palette)
+        cluster_color_list = [
+            mcolors.to_hex(cmap(i / max(1, len(valid_labels) - 1)))
+            for i in range(len(valid_labels))
+        ]
 
     layout_format = Layout(width="18%", style={"description_width": "initial"})
-    color_pickers = []
-    for i, c in enumerate(colors):
-        color_pickers.append(
-            widgets.ColorPicker(
-                value=c, description=f"cluster_{i}", layout=layout_format
-            )
-        )
+    color_pickers = [
+        widgets.ColorPicker(value=color, description=f"cluster_{label}", layout=layout_format)
+        for label, color in zip(valid_labels, cluster_color_list)
+    ]
 
-    newcmp = mpl.colors.ListedColormap(colors, name="new_cmap")
+    # Build initial color map
+    cluster_color_rgb = []
+    for c in cluster_color_list:
+        try:
+            cluster_color_rgb.append(mcolors.to_rgb(c))
+        except ValueError:
+            cluster_color_rgb.append(parse_rgb_string(c))
+
+    cluster_color_map = ListedColormap(cluster_color_rgb)
+
     out = widgets.Output()
     with out:
-        fig = ps.plot_phase_map(cmap=None, alpha_cluster_map=alpha_cluster_map)
+        fig = ps.plot_phase_map(cmap=cluster_color_map, alpha_cluster_map=alpha_cluster_map)
         plt.show()
         save_fig(fig)
 
     def change_color(_):
         out.clear_output()
+        
+        updated_colors = []
+        for picker in color_pickers:
+            try:
+                updated_colors.append(mcolors.to_rgb(picker.value))
+            except ValueError:
+                updated_colors.append(parse_rgb_string(picker.value))
+        newcmp = ListedColormap(updated_colors)
+
+        # Update cluster_colors (so downstream uses are in sync)
+        ps.cluster_colors = {label: mcolors.to_hex(rgb) for label, rgb in zip(valid_labels, updated_colors)}
+        ps.set_color_palette(newcmp)  # If you want to update internal palette too
+
         with out:
-            color_for_map = []
-            for color_picker in color_pickers:
-                color_for_map.append(mpl.colors.to_rgb(color_picker.value)[:3])
-            newcmp = mpl.colors.ListedColormap(color_for_map, name="new_cmap")
-            ps.set_color_palette(newcmp)
-            fig = ps.plot_phase_map(cmap=newcmp)
+            fig = ps.plot_phase_map(cmap=newcmp, alpha_cluster_map=alpha_cluster_map)
+            plt.show()
             save_fig(fig)
 
     button = widgets.Button(description="Set", layout=Layout(width="auto"))
     button.on_click(change_color)
 
-    color_list = []
-    for row in range((len(color_pickers) // 5) + 1):
-        color_list.append(widgets.HBox(color_pickers[5 * row : (5 * row + 5)]))
-
-    color_box = widgets.VBox(
-        [widgets.VBox(color_list), button], layout=Layout(flex="2 1 0%", width="auto")
-    )
+    color_rows = [widgets.HBox(color_pickers[i:i+5]) for i in range(0, len(color_pickers), 5)]
+    color_box = widgets.VBox([*color_rows, button], layout=Layout(flex="2 1 0%", width="auto"))
     out_box = widgets.Box([out], layout=Layout(flex="8 1 0%", width="auto"))
+
     final_box = widgets.VBox([color_box, out_box])
     display(final_box)
-
 
 def show_unmixed_weights(weights: pd.DataFrame):
     weights_options = weights.index
