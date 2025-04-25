@@ -847,16 +847,21 @@ class PixelSegmenter(object):
         plt.show()
         return fig
 
-    def plot_phase_map(self, cmap=None, alpha_cluster_map=0.75):
+    def plot_phase_map(self, cmap=None, alpha_cluster_map=0.75, phase_override=None):
+        import matplotlib.pyplot as plt
+        import numpy as np
+
         # If no cmap is provided, fall back to self.color_palette
         cmap = cmap or self.color_palette
 
+        # Get the base image (navigation / intensity)
         if type(self.dataset) not in [IMAGEDataset, PIXLDataset]:
             img = self.nav_img.data 
         else:
             img = resize(self.dataset.intensity_map, self.dataset.chemical_maps.shape[:2])
 
-        phase = self.labels.reshape(self.height, self.width)
+        # Use the override phase map if provided, else fall back to self.labels
+        phase = phase_override if phase_override is not None else self.labels.reshape(self.height, self.width)
 
         fig, axs = plt.subplots(nrows=1, ncols=2, sharey=True, figsize=(8, 4), dpi=100)
 
@@ -866,15 +871,15 @@ class PixelSegmenter(object):
 
         axs[1].imshow(img, cmap="gray", interpolation="none", alpha=1.0)
 
-        # This part now respects the passed-in cmap!
-        axs[1].imshow(
+        # Overlay the cluster map (respects NaNs in phase_override)
+        im = axs[1].imshow(
             phase,
-            cmap=cmap,  # <- this now uses the passed-in value
+            cmap=cmap,
             interpolation="none",
             norm=self.color_norm,
             alpha=alpha_cluster_map,
         )
-        
+
         axs[1].axis("off")
         axs[1].set_title("Cluster map")
 

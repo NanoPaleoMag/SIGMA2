@@ -874,8 +874,9 @@ def view_phase_map(ps, alpha_cluster_map=0.6):
     import matplotlib.pyplot as plt
     import matplotlib.colors as mcolors
     from matplotlib.colors import ListedColormap
+    import numpy as np
 
-    # Get cluster labels excluding -1
+    # Get cluster labels excluding -1 (noise clusters)
     valid_labels = sorted([label for label in set(ps.labels) if label != -1])
 
     # Use ps.cluster_colors if available, fallback to default color_palette
@@ -913,11 +914,25 @@ def view_phase_map(ps, alpha_cluster_map=0.6):
         except ValueError:
             cluster_color_rgb.append(parse_rgb_string(c))
 
+    # Add gray color for cluster -1 (noise)
+    noise_color = "#999999"  # Gray color for noise
+    cluster_color_rgb.append(mcolors.to_rgb(noise_color))  # Append gray to the colormap
+
+    # Create the colormap (including noise color)
     cluster_color_map = ListedColormap(cluster_color_rgb)
+
+    # Mask phase map for the noise cluster (-1) to make it transparent
+    phase = ps.labels.reshape(ps.height, ps.width)
+    phase_masked = phase.astype(float)
+    phase_masked[phase == -1] = np.nan  # Replace -1 (noise) with NaN
 
     out = widgets.Output()
     with out:
-        fig = ps.plot_phase_map(cmap=cluster_color_map, alpha_cluster_map=alpha_cluster_map)
+        fig = ps.plot_phase_map(
+            cmap=cluster_color_map,
+            alpha_cluster_map=alpha_cluster_map,
+            phase_override=phase_masked  # ✅ now passing masked phase map
+        )
         plt.show()
         save_fig(fig)
 
