@@ -34,8 +34,10 @@ class PixelSegmenter(object):
         dataset: Union[SEMDataset, TEMDataset, IMAGEDataset],
         method: str = "BayesianGaussianMixture",
         method_args: Dict = {"n_components": 8, "random_state": 4},
+        
     ):
-
+        
+        self.cluster_colors = {}  # dict of cluster_id -> RGB string like 'rgb(255,0,0)'
         self.latent = latent
         self.dataset = dataset
         self.dataset_norm = dataset.normalised_elemental_data

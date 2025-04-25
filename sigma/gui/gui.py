@@ -658,17 +658,36 @@ def plot_latent_density(ps: PixelSegmenter, bins=50):
 
 
 def check_latent_space(ps: PixelSegmenter, ratio_to_be_shown=0.25, show_map=False):
-    # create color codes
-    phase_colors = []
-    for i in range(ps.n_components):
-        r, g, b = cm.get_cmap(ps.color_palette)(i * (ps.n_components - 1) ** -1)[:3]
-        r, g, b = int(r * 255), int(g * 255), int(b * 255)
-        color = "#{:02x}{:02x}{:02x}".format(r, g, b)
-        phase_colors.append(color)
+    #creating colours
+    # Use recoloured cluster colors from interactive_latent_plot if available, otherwise fallback to default palette
+    if hasattr(ps, 'cluster_colors') and ps.cluster_colors:
+        # Custom user-assigned colors
+        domain = sorted(set(ps.labels.flatten()))
+        range_ = []
+        
+        # Assign custom colors where available, fallback to colormap if not
+        for cid in domain:
+            if cid in ps.cluster_colors:
+                range_.append(ps.cluster_colors[cid])  # Use manual color if available
+            else:
+                # Generate a color from the colormap for clusters that have not been recolored
+                cmap = cm.get_cmap(ps.color_palette)
+                r, g, b = cmap(cid * (ps.n_components - 1) ** -1)[:3]
+                hex_color = "#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255))
+                range_.append(hex_color)
 
-   
-    domain = [i for i in range(ps.n_components)]
-    range_ = phase_colors
+    else:
+        # Default colormap-based colors
+        cmap = cm.get_cmap(ps.color_palette)
+        domain = [i for i in range(ps.n_components)]
+        range_ = []
+        
+        # Generate colors from the colormap for all clusters
+        for i in range(ps.n_components):
+            r, g, b = cmap(i * (ps.n_components - 1) ** -1)[:3]
+            hex_color = "#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255))
+            range_.append(hex_color)
+
 
     latent, dataset, feature_list, labels = (
         ps.latent,
@@ -1400,14 +1419,18 @@ def plot_ternary_composition(ps:PixelSegmenter):
 
 
 from plotly.subplots import make_subplots
-from ipywidgets import Button, HBox, VBox, Output, ToggleButtons
+from ipywidgets import Button, Output, ToggleButtons, Dropdown, HBox, VBox, Layout
+from IPython.display import clear_output
 
 
 from collections import defaultdict
 
 
 
-def interactive_latent_plot(ps, ratio_to_be_shown=0.5):
+
+
+
+def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
     """
     Interactive GUI for merging the colours of the clusters in the latent space plot.
     
@@ -1422,23 +1445,43 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5):
     ps :                PixelSegmenter object
                         The PixelSegmenter object to be visualised.
          
-    ratio_to_be_shown : The proportion of points to be shown. Default = 0.5, so half the points. 
+    ratio_to_be_shown : float
+                        The proportion of points to be shown. Default = 0.5, so half the points. 
                         Can improve rendering times by reducing this value.
+                        
+    n_colours :         int
+                        Number of colours to display that the user may choose from
     
     
     
     """
     
-    from matplotlib import cm
+    manual_cluster_colors = {}  # cluster_id -> RGB string
+    original_palette='%s' % ps.color_palette #copying the original color palette
+    
+    original_cluster_colors = {
+        i: "#{:02x}{:02x}{:02x}".format(
+            int(r * 255), int(g * 255), int(b * 255)
+        )
+        for i, (r, g, b, _) in enumerate(
+            cm.get_cmap(original_palette)(np.linspace(0, 1, ps.n_components))
+        )
+    } #getting the original cluster colors object.
+
+    
+    def get_color(cid):
+        # Try manual override, then ps.cluster_colors, then fallback to original
+        return (
+            manual_cluster_colors.get(cid)
+            or ps.cluster_colors.get(cid)
+            or original_cluster_colors.get(cid, '#cccccc')  # Final fallback
+        )
+
 
     # Get the colormap and normalization
     cmap = cm.get_cmap(ps.color_palette)
     norm = ps.color_norm
 
-    # Map cluster IDs to RGB strings using the same colormap and normalization as the PixelSegmenter
-    def get_color(cluster_id):
-        r, g, b, _ = cmap(norm(cluster_id))
-        return f'rgb({int(r*255)}, {int(g*255)}, {int(b*255)})'
 
 
     # Extract relevant data
@@ -1471,9 +1514,28 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5):
         title="Interactive Latent Space",
         xaxis_title="Latent X",
         yaxis_title="Latent Y",
+        plot_bgcolor='white',
         height=600,
-        dragmode="lasso",  # Default to lasso
+        width=600,
+        dragmode="select",  # Default to select
         selectdirection="any"
+    )
+    
+    fig.update_xaxes(
+    mirror=True,
+    ticks='outside',
+    showline=True,
+    linecolor='black',
+    gridcolor='lightgrey',
+    zerolinecolor='lightgrey'
+    )
+    fig.update_yaxes(
+    mirror=True,
+    ticks='outside',
+    showline=True,
+    linecolor='black',
+    gridcolor='lightgrey',
+    zerolinecolor='lightgrey'
     )
 
     # UI element to switch between lasso and box
@@ -1505,7 +1567,8 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5):
                     cluster_map[original_cluster] = original_cluster
 
             merged_ids = df['cluster'].map(cluster_map)
-            colors = merged_ids.map(get_color)
+            colors = merged_ids.map(lambda cid: manual_cluster_colors.get(cid, get_color(cid)))
+
 
             # Single trace plot
             fig.add_trace(go.Scattergl(
@@ -1582,15 +1645,35 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5):
     # Reset button
     reset_button = Button(description="Reset")
 
+
+
+
     def on_reset_clicked(b):
         nonlocal new_ps
+
+        with out:
+            print('Reset Clicked')
+
         selected_clusters.clear()
         merged_clusters.clear()
-        new_ps = None  # Reset new object
+        manual_cluster_colors.clear()  # clear recolorings
+        new_ps = None
+
+        ps.color_palette = original_palette  # restore palette
+        ps.cluster_colors = original_cluster_colors.copy()  # 🔥 use saved original
+
         with out:
             out.clear_output()
-            print("Reset complete.")
+            print("✅ Reset complete. Cluster colors restored to the original palette.")
+
+        fig.data = []
         plot()
+
+        with out:
+            print("Plot has been refreshed.")
+
+
+
 
     # Output button
     output_button = Button(description="Output Merged Clusters")
@@ -1620,18 +1703,74 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5):
                 new_ps.n_components=len(set(new_labels.flatten()))
                 
                 print("✅ New PixelSegmenter object created!")
+                
+    # Color picker options (define however many you want)
+    # Build a color selector UI
+
+    # Generate colors from the colormap
+    color_buttons = []
+    num_colors = n_colours
+    cmap_colors = [cmap(i / (num_colors - 1)) for i in range(num_colors)]
+
+    selected_color = [None]  # use list for mutability in closure
+
+    def on_color_button_click(b):
+        selected_color[0] = b.tooltip  # stores the RGB string
+        with out:
+            print(f"Selected color: {selected_color[0]}")
+
+    for rgba in cmap_colors:
+        r, g, b_, _ = rgba
+        rgb_str = f'rgb({int(r*255)}, {int(g*255)}, {int(b_*255)})'
+        btn = Button(
+            layout=Layout(width='30px', height='30px'),
+            tooltip=rgb_str,
+            style={'button_color': rgb_str},
+        )
+        btn.on_click(on_color_button_click)
+        color_buttons.append(btn)
+
+    color_selector_ui = HBox(color_buttons[:15]), HBox(color_buttons[15:])
+
+
+    recolor_button = Button(description="Recolour Selected Clusters")
+
+    def on_recolor_clicked(b):
+        if not selected_clusters or not selected_color[0]:
+            with out:
+                print("Please select clusters and a color first.")
+            return
+
+        for cluster_id in selected_clusters:
+            manual_cluster_colors[cluster_id] = selected_color[0]
+            ps.cluster_colors[cluster_id] = selected_color[0]
+            
+        
+            
+
+        selected_clusters.clear()  # clear selection to avoid recoloring again
+        with out:
+            out.clear_output()
+            print("✅ Recolored selected clusters.")
+        plot()
+        
+    
+
+
 
     # Bind buttons
     merge_button.on_click(on_merge_clicked)
     reset_button.on_click(on_reset_clicked)
     output_button.on_click(on_output_clicked)
+    recolor_button.on_click(on_recolor_clicked)
 
     # Initial plot
     plot()
 
     # Layout
-    controls = HBox([dragmode_selector, merge_button, reset_button, output_button])
-    display(VBox([controls, fig, out]))
+    controls = HBox([dragmode_selector, merge_button, reset_button, output_button, recolor_button])
+    display(VBox([controls, *color_selector_ui, fig, out]))
+
 
     # Return access function for new object
     return lambda: new_ps

@@ -11,6 +11,8 @@ from hyperspy._signals.eds_sem import EDSSEMSpectrum
 from hyperspy._signals.signal2d import Signal2D
 from .base import BaseDataset
 
+import copy
+
 class SEMDataset(BaseDataset):
     def __init__(self, file_path: Union[str, Path], nag_file_path: Union[str, Path]=None):
         super().__init__(file_path)
@@ -167,9 +169,14 @@ class AZTECDataset(object):
         """
         print(f"Rebinning the intensity with the size of {size}")
         x, y = size[0], size[1]
-        self.spectra_bin = self.spectra.rebin(scale=(x, y, 1))
+        
+        #getting the dimensions of the binned array
+        new_x=int(self.spectra.shape[0]/x)
+        new_y=int(self.spectra.shape[1]/y)
+        
+        self.spectra_bin = bin_ndarray(self.spectra,(new_x,new_y,self.spectra.shape[2]))
         self.nav_img_bin = self.nav_img.rebin(scale=(x, y))
-        self.spectra_raw = self.spectra_bin.deepcopy()
+        self.spectra_raw = copy.deepcopy(self.spectra_bin)
         return (self.spectra_bin, self.nav_img_bin)
 
     def remove_fist_peak(self, end: float):
@@ -304,6 +311,47 @@ def clean_metadata(md):
             continue  # skip complex types
         cleaned[k] = v
     return cleaned
+ 
+ 
+ 
+#rebin function needed for binning maps of AZTECDataset
+def bin_ndarray(ndarray, new_shape, operation='sum'):
+    """
+    Bins an ndarray in all axes based on the target shape, by summing or
+        averaging.
+
+    Number of output dimensions must match number of input dimensions and 
+        new axes must divide old ones.
+
+    Example
+    -------
+    >>> m = np.arange(0,100,1).reshape((10,10))
+    >>> n = bin_ndarray(m, new_shape=(5,5), operation='sum')
+    >>> print(n)
+
+    [[ 22  30  38  46  54]
+     [102 110 118 126 134]
+     [182 190 198 206 214]
+     [262 270 278 286 294]
+     [342 350 358 366 374]]
+
+    """
+    operation = operation.lower()
+    if operation not in ['sum', 'mean']:
+        raise ValueError("Operation not supported.")
+    if ndarray.ndim != len(new_shape):
+        raise ValueError("Shape mismatch: {} -> {}".format(ndarray.shape,
+                                                           new_shape))
+    compression_pairs = [(d, c//d) for d,c in zip(new_shape,
+                                                  ndarray.shape)]
+    flattened = [l for p in compression_pairs for l in p]
+    ndarray = ndarray.reshape(flattened)
+    for i in range(len(new_shape)):
+        op = getattr(ndarray, operation)
+        ndarray = op(-1*(i+1))
+    return ndarray
+    
+
  
 def load_AZTEC(input_file,y_dim=1024):
     """
