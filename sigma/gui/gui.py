@@ -1521,6 +1521,10 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
     manual_cluster_colors = {}  # cluster_id -> RGB string
     original_palette='%s' % ps.color_palette #copying the original color palette
     
+    #for creating new clusters
+    selected_point_indices = set()  # for new cluster selection
+    new_cluster_mode = [False]  # wrapped in list for mutability
+    
     original_cluster_colors = {
         i: "#{:02x}{:02x}{:02x}".format(
             int(r * 255), int(g * 255), int(b * 255)
@@ -1617,6 +1621,13 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
 
     # Helper to regenerate the plot with merged colors
     def plot():
+        nonlocal df
+        # Refresh the DataFrame with updated labels
+        current_labels = ps.labels.flatten()
+        df = pd.DataFrame(latent[sampled_indices], columns=["x", "y"])
+        df["cluster"] = current_labels[sampled_indices]
+        df["index"] = sampled_indices
+
         with fig.batch_update():
             fig.data = []  # Clear previous data
 
@@ -1633,8 +1644,6 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
             merged_ids = df['cluster'].map(cluster_map)
             colors = merged_ids.map(lambda cid: manual_cluster_colors.get(cid, get_color(cid)))
 
-
-            # Single trace plot
             fig.add_trace(go.Scattergl(
                 x=df['x'],
                 y=df['y'],
@@ -1645,11 +1654,11 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
                 hovertemplate="Cluster: %{customdata[0]}<br>Index: %{customdata[1]}<extra></extra>"
             ))
 
-            # Reattach interactivity
             trace = fig.data[0]
             trace.on_click(on_point_click)
             trace.on_selection(on_select)
-
+            
+            
     # Click handler
     def on_point_click(trace, points, selector):
         for i in points.point_inds:
@@ -1666,17 +1675,83 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
         with out:
             print(f"Clicked cluster(s): {sorted(selected_clusters)}")
 
+    
+    #toggle switch to handle unassigned points when creating new cluster
+    include_noise_toggle = ToggleButtons(
+        options=["Include -1", "Exclude -1"],
+        description="Noise pts:",
+        value="Exclude -1",
+        style={"button_width": "100px"}
+    )
+
+    # Merge button
+    merge_button = Button(description="Merge Clusters")
+    
+    
+    #new cluster buttons
+    select_points_button = Button(description="Select Points for New Cluster")
+    create_cluster_button = Button(description="Create New Cluster")
+    
     # Selection handler (lasso or rectangle)
     def on_select(trace, points, selector):
         if not points.point_inds:
             return
-        selected = set(int(trace.customdata[i][0]) for i in points.point_inds)
-        selected_clusters.update(selected)
-        with out:
-            print(f"Lasso/Box selected clusters: {sorted(selected_clusters)}")
 
-    # Merge button
-    merge_button = Button(description="Merge Clusters")
+        if new_cluster_mode[0]:
+            indices = [int(trace.customdata[i][1]) for i in points.point_inds]
+            selected_point_indices.update(indices)
+            with out:
+                print(f"🟢 Selected {len(indices)} points for new cluster.")
+        else:
+            selected = set(int(trace.customdata[i][0]) for i in points.point_inds)
+            selected_clusters.update(selected)
+            with out:
+                print(f"Lasso/Box selected clusters: {sorted(selected_clusters)}")
+     
+    def on_select_points_clicked(b):
+        selected_point_indices.clear()
+        new_cluster_mode[0] = True
+        with out:
+            out.clear_output()
+            print("🎯 Selection mode activated. Use lasso/box to select points, then click 'Create New Cluster'.")
+
+    def on_create_cluster_clicked(b):
+        if not selected_point_indices:
+            with out:
+                print("⚠️ No points selected.")
+            return
+
+        nonlocal labels
+        current_labels = labels.flatten()
+        existing_clusters = set(current_labels)
+        new_cluster_id = max(existing_clusters) + 1
+
+        # Store selected points count before clearing
+        num_points = len(selected_point_indices)
+
+        # Assign new cluster ID
+        for idx in selected_point_indices:
+            if include_noise_toggle.value == "Include -1" or current_labels[idx] != -1:
+                current_labels[idx] = new_cluster_id
+
+
+        labels = current_labels.reshape(ps.height * ps.width, 1)
+        ps.labels = labels
+        ps.n_components = len(set(labels.flatten()))
+
+        # Reset selection state
+        selected_point_indices.clear()
+        new_cluster_mode[0] = False
+
+        with out:
+            out.clear_output()
+            print(f"✅ Created new cluster {new_cluster_id} with {num_points} points.")
+
+        plot()
+
+
+
+
     
 
     def on_merge_clicked(b):
@@ -1846,12 +1921,25 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
     reset_button.on_click(on_reset_clicked)
     output_button.on_click(on_output_clicked)
     recolor_button.on_click(on_recolor_clicked)
+    select_points_button.on_click(on_select_points_clicked)
+    create_cluster_button.on_click(on_create_cluster_clicked)
+
 
     # Initial plot
     plot()
 
     # Layout
-    controls = HBox([dragmode_selector, merge_button, reset_button, output_button, recolor_button])
+    controls = HBox([
+        dragmode_selector, 
+        merge_button, 
+        reset_button, 
+        output_button, 
+        recolor_button,
+        select_points_button,
+        create_cluster_button,
+        include_noise_toggle
+    ])
+
     display(VBox([controls, *color_selector_ui, fig, out]))
 
 
