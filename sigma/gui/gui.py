@@ -846,27 +846,28 @@ def check_latent_space(ps: PixelSegmenter, ratio_to_be_shown=0.25, show_map=Fals
 
 
 def show_cluster_distribution(ps: PixelSegmenter, **kwargs):
-    cluster_options = [f"cluster_{n}" for n in range(ps.n_components)]
+    unique_clusters = sorted(set(ps.labels.flatten()))
+    cluster_options = [f"cluster_{n}" for n in unique_clusters]
+    
     multi_select_cluster = widgets.SelectMultiple(options=["All"] + cluster_options)
     plots_output = widgets.Output()
 
     all_fig = []
     with plots_output:
-        for i in range(ps.n_components):
-                fig = ps.plot_single_cluster_distribution(cluster_num=i, **kwargs)
-                all_fig.append(fig)
+        for i in unique_clusters:
+            fig = ps.plot_single_cluster_distribution(cluster_num=i, **kwargs)
+            all_fig.append(fig)
 
     def eventhandler(change):
         plots_output.clear_output()
         with plots_output:
             if change.new == ("All",):
-                for i in range(ps.n_components):
-                        fig = ps.plot_single_cluster_distribution(cluster_num=i, **kwargs)
+                for i in unique_clusters:
+                    fig = ps.plot_single_cluster_distribution(cluster_num=i, **kwargs)
             else:
                 for cluster in change.new:
-                        fig = ps.plot_single_cluster_distribution(
-                            cluster_num=int(cluster.split("_")[1]), **kwargs
-                        )
+                    cluster_id = int(cluster.split("_")[1])
+                    fig = ps.plot_single_cluster_distribution(cluster_num=cluster_id, **kwargs)
 
     multi_select_cluster.observe(eventhandler, names="value")
     display(multi_select_cluster)
@@ -1124,19 +1125,20 @@ def show_unmixed_weights_and_compoments(
     display(tab)
 
 
-def view_clusters_sum_spectra(
-    ps: PixelSegmenter, normalisation=True, spectra_range=(0, 8)
-):
-    cluster_options = [f"cluster_{n}" for n in range(ps.n_components)]
+def view_clusters_sum_spectra(ps: PixelSegmenter, normalisation=True, spectra_range=(0, 8)):
+    # Get unique, non-noise cluster IDs
+    unique_clusters = sorted(c for c in set(ps.labels.flatten()) if c != -1)
+    cluster_options = [f"cluster_{n}" for n in unique_clusters]
+    
     multi_select = widgets.SelectMultiple(options=cluster_options)
     plots_output = widgets.Output()
     profile_output = widgets.Output()
 
     figs = []
     with plots_output:
-        for cluster in cluster_options:
+        for cluster_id in unique_clusters:
             fig = ps.plot_binary_map_spectra_profile(
-                cluster_num=int(cluster.split("_")[1]),
+                cluster_num=cluster_id,
                 normalisation=normalisation,
                 spectra_range=spectra_range,
             )
@@ -1148,17 +1150,18 @@ def view_clusters_sum_spectra(
 
         with plots_output:
             for cluster in change.new:
+                cluster_id = int(cluster.split("_")[1])
                 fig = ps.plot_binary_map_spectra_profile(
-                    cluster_num=int(cluster.split("_")[1]),
+                    cluster_num=cluster_id,
                     normalisation=normalisation,
                     spectra_range=spectra_range,
                 )
 
         with profile_output:
-            ### X-ray profile ###
             for cluster in change.new:
+                cluster_id = int(cluster.split("_")[1])
                 _, _, spectra_profile = ps.get_binary_map_spectra_profile(
-                    cluster_num=int(cluster.split("_")[1]), use_label=True
+                    cluster_num=cluster_id, use_label=True
                 )
                 visual.plot_profile(
                     spectra_profile["energy"], spectra_profile["intensity"], ps.peak_list
@@ -1168,11 +1171,11 @@ def view_clusters_sum_spectra(
 
     display(multi_select)
     save_fig(figs)
+
     tab = widgets.Tab([plots_output, profile_output])
     tab.set_title(0, "clusters + spectra")
     tab.set_title(1, "spectra")
     display(tab)
-
 
 def save_csv(df):
     text = widgets.Text(
