@@ -1770,7 +1770,7 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
             return
 
         # Skip noise cluster (-1) from selection
-        selected_clusters = {cluster for cluster in selected_clusters if cluster != -1}
+        selected_clusters.difference_update([-1])
 
         if not selected_clusters:  # If no clusters are left after excluding noise
             with out:
