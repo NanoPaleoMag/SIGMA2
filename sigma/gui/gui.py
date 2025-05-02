@@ -846,19 +846,39 @@ def check_latent_space(ps: PixelSegmenter, ratio_to_be_shown=0.25, show_map=Fals
 
 
 def show_cluster_distribution(ps: PixelSegmenter, **kwargs):
-    unique_clusters = sorted(set(ps.labels.flatten()))
-    cluster_options = [f"cluster_{n}" for n in unique_clusters]
-    
+    non_empty_clusters = get_non_empty_clusters(ps)
+    cluster_options = [f"cluster_{n}" for n in non_empty_clusters]
     multi_select_cluster = widgets.SelectMultiple(options=["All"] + cluster_options)
     plots_output = widgets.Output()
 
     all_fig = []
     with plots_output:
-        for i in unique_clusters:
-            fig = ps.plot_single_cluster_distribution(cluster_num=i, **kwargs)
-            all_fig.append(fig)
+        for i in non_empty_clusters:
+            try:
+                fig = ps.plot_single_cluster_distribution(cluster_num=i, **kwargs)
+                all_fig.append(fig)
+            except ValueError:
+                print(f"Skipping empty cluster {i}")
+
 
     def eventhandler(change):
+        plots_output.clear_output()
+        with plots_output:
+            selected = change.new
+            if selected == ("All",):
+                for i in non_empty_clusters:
+                    try:
+                        fig = ps.plot_single_cluster_distribution(cluster_num=i, **kwargs)
+                    except ValueError:
+                        print(f"Skipping empty cluster {i}")
+            else:
+                for cluster in selected:
+                    i = int(cluster.split("_")[1])
+                    try:
+                        fig = ps.plot_single_cluster_distribution(cluster_num=i, **kwargs)
+                    except ValueError:
+                        print(f"Skipping empty cluster {i}")
+
         plots_output.clear_output()
         with plots_output:
             if change.new == ("All",):
@@ -1124,25 +1144,30 @@ def show_unmixed_weights_and_compoments(
     tab.set_title(3, "Single component")
     display(tab)
 
-
 def view_clusters_sum_spectra(ps: PixelSegmenter, normalisation=True, spectra_range=(0, 8)):
-    # Get unique, non-noise cluster IDs
-    unique_clusters = sorted(c for c in set(ps.labels.flatten()) if c != -1)
-    cluster_options = [f"cluster_{n}" for n in unique_clusters]
-    
+    # Get unique cluster IDs excluding -1
+    all_cluster_ids = sorted(c for c in set(ps.labels.flatten()) if c != -1)
+
+    # Filter out clusters with no assigned pixels
+    non_empty_clusters = [c for c in all_cluster_ids if np.sum(ps.labels == c) > 0]
+    cluster_options = [f"cluster_{c}" for c in non_empty_clusters]
+
     multi_select = widgets.SelectMultiple(options=cluster_options)
     plots_output = widgets.Output()
     profile_output = widgets.Output()
 
     figs = []
     with plots_output:
-        for cluster_id in unique_clusters:
-            fig = ps.plot_binary_map_spectra_profile(
-                cluster_num=cluster_id,
-                normalisation=normalisation,
-                spectra_range=spectra_range,
-            )
-            figs.append(fig)
+        for cluster_id in non_empty_clusters:
+            try:
+                fig = ps.plot_binary_map_spectra_profile(
+                    cluster_num=cluster_id,
+                    normalisation=normalisation,
+                    spectra_range=spectra_range,
+                )
+                figs.append(fig)
+            except ValueError:
+                print(f"Skipping empty cluster {cluster_id}")
 
     def eventhandler(change):
         plots_output.clear_output()
@@ -1151,21 +1176,29 @@ def view_clusters_sum_spectra(ps: PixelSegmenter, normalisation=True, spectra_ra
         with plots_output:
             for cluster in change.new:
                 cluster_id = int(cluster.split("_")[1])
-                fig = ps.plot_binary_map_spectra_profile(
-                    cluster_num=cluster_id,
-                    normalisation=normalisation,
-                    spectra_range=spectra_range,
-                )
+                try:
+                    fig = ps.plot_binary_map_spectra_profile(
+                        cluster_num=cluster_id,
+                        normalisation=normalisation,
+                        spectra_range=spectra_range,
+                    )
+                except ValueError:
+                    print(f"Skipping empty cluster {cluster_id}")
 
         with profile_output:
             for cluster in change.new:
                 cluster_id = int(cluster.split("_")[1])
-                _, _, spectra_profile = ps.get_binary_map_spectra_profile(
-                    cluster_num=cluster_id, use_label=True
-                )
-                visual.plot_profile(
-                    spectra_profile["energy"], spectra_profile["intensity"], ps.peak_list
-                )
+                try:
+                    _, _, spectra_profile = ps.get_binary_map_spectra_profile(
+                        cluster_num=cluster_id, use_label=True
+                    )
+                    visual.plot_profile(
+                        spectra_profile["energy"],
+                        spectra_profile["intensity"],
+                        ps.peak_list,
+                    )
+                except ValueError:
+                    print(f"No spectra to plot for empty cluster {cluster_id}")
 
     multi_select.observe(eventhandler, names="value")
 
@@ -1176,6 +1209,21 @@ def view_clusters_sum_spectra(ps: PixelSegmenter, normalisation=True, spectra_ra
     tab.set_title(0, "clusters + spectra")
     tab.set_title(1, "spectra")
     display(tab)
+
+
+
+#utility function
+def get_non_empty_clusters(ps: PixelSegmenter):
+    """Return a sorted list of cluster IDs that contain at least one pixel (excluding -1)."""
+    return sorted(
+        c for c in set(ps.labels.flatten())
+        if c != -1 and np.sum(ps.labels == c) > 0
+    )
+
+
+
+
+
 
 def save_csv(df):
     text = widgets.Text(
