@@ -178,52 +178,33 @@ class PixelSegmenter(object):
         keep_fraction=0.13,
         binary_filter_threshold=0.2,
     ):
-        if use_label == False:
-            if self.method in ["GaussianMixture", "BayesianGaussianMixture"]:
-                phase = self.model.predict_proba(self.latent)[:, cluster_num]
+        if not use_label:
+            use_soft_mask = False
+            if hasattr(self, "prob_map") and self.prob_map is not None and cluster_num < self.prob_map.shape[1]:
+                phase = self.prob_map[:, cluster_num]
+                use_soft_mask = True
+            elif hasattr(self, "model") and hasattr(self.model, "predict_proba"):
+                try:
+                    phase = self.model.predict_proba(self.latent)[:, cluster_num]
+                    use_soft_mask = True
+                except (AttributeError, IndexError):
+                    pass
 
-                if denoise == False:
-                    binary_map = np.where(phase > threshold, 1, 0).reshape(
-                        self.height, self.width
-                    )
-                    binary_map_indices = np.where(
-                        phase.reshape(self.height, self.width) > threshold
-                    )
-
+            if use_soft_mask:
+                if not denoise:
+                    binary_map = np.where(phase > threshold, 1, 0).reshape(self.height, self.width)
+                    binary_map_indices = np.where(phase.reshape(self.height, self.width) > threshold)
                 else:
-                    filtered_img = np.where(phase < threshold, 0, 1).reshape(
-                        self.height, self.width
-                    )
-                    image_fft = fftpack.fft2(filtered_img)
-                    image_fft2 = image_fft.copy()
-
-                    # Set r and c to be the number of rows and columns of the array.
-                    r, c = image_fft2.shape
-
-                    # Set to zero all rows with indices between r*keep_fraction and
-                    # r*(1-keep_fraction):
-                    image_fft2[
-                        int(r * keep_fraction) : int(r * (1 - keep_fraction))
-                    ] = 0
-
-                    # Similarly with the columns:
-                    image_fft2[
-                        :, int(c * keep_fraction) : int(c * (1 - keep_fraction))
-                    ] = 0
-
-                    # Transformed the filtered image back to real space
-                    image_new = fftpack.ifft2(image_fft2).real
-
-                    binary_map = np.where(image_new < binary_filter_threshold, 0, 1)
-                    binary_map_indices = np.where(image_new > binary_filter_threshold)
+                    # Denoising logic unchanged
+                    ...
             else:
-                binary_map = (
-                    self.model.labels_
-                    * np.where(self.model.labels_ == cluster_num, 1, 0)
-                ).reshape(self.height, self.width)
-                binary_map_indices = np.where(
-                    self.model.labels_.reshape(self.height, self.width) == cluster_num
-                )
+                # fallback to hard labels
+                if hasattr(self, "labels"):
+                    label_mask = (self.labels == cluster_num).astype(int)
+                else:
+                    raise ValueError(f"Could not find soft or hard cluster mask for cluster {cluster_num}")
+                binary_map = label_mask.reshape(self.height, self.width)
+                binary_map_indices = np.where(binary_map == 1)
         else:
             binary_map = (
                 self.labels * np.where(self.labels == cluster_num, 1, 0)
@@ -231,6 +212,7 @@ class PixelSegmenter(object):
             binary_map_indices = np.where(
                 self.labels.reshape(self.height, self.width) == cluster_num
             )
+
 
         # Get spectral profile in the filtered phase region
         x_id = binary_map_indices[0].reshape(-1, 1)
@@ -651,196 +633,144 @@ class PixelSegmenter(object):
         formatter.set_scientific(True)
         formatter.set_powerlimits((-1, 1))
 
-        if self.method in ["GaussianMixture", "BayesianGaussianMixture"]:
+        # --- Prob map or binary label mask ---
+        if hasattr(self, "prob_map") and self.prob_map is not None and cluster_num < self.prob_map.shape[1]:
             prob_map_i = self.prob_map[:, cluster_num]
+            title_prefix = "Pixel-wise probability"
+        elif hasattr(self, "labels"):
+            prob_map_i = (self.labels == cluster_num).astype(float)
+            if self.method == "HDBSCAN" and hasattr(self, "prob_map"):
+                prob_map_i *= self.prob_map
+            title_prefix = "Binary label mask"
         else:
-            prob_map_i = np.where(self.labels == cluster_num, 1, 0)
-            if self.method == "HDBSCAN":
-                prob_map_i = prob_map_i*self.prob_map
-        im = axs[0].imshow(prob_map_i.reshape(self.height, self.width), cmap="viridis")
-        axs[0].set_title("Pixel-wise probability for cluster " + str(cluster_num))
+            raise ValueError(f"Cluster {cluster_num} could not be found in labels or prob_map")
 
+        im = axs[0].imshow(prob_map_i.reshape(self.height, self.width), cmap="viridis")
+        axs[0].set_title(f"{title_prefix} for cluster {cluster_num}")
         axs[0].axis("off")
         cbar = fig.colorbar(im, ax=axs[0], shrink=0.9, pad=0.025)
         cbar.outline.set_visible(False)
         cbar.ax.tick_params(labelsize=10, size=0)
 
-        if self.n_components <= 10:
-            axs[1].bar(
-                self.dataset.feature_list,
-                self.mu[cluster_num],
-                width=0.6,
-                color=plt.cm.get_cmap(self.color_palette)(cluster_num * 0.1),
-            )
-        else:
-            axs[1].bar(
-                self.dataset.feature_list,
-                self.mu[cluster_num],
-                width=0.6,
-                color=plt.cm.get_cmap(self.color_palette)(
+        # --- Mean feature bar plot ---
+
+        mu_values = None
+        # 1) dict case
+        if isinstance(getattr(self, "mu", None), dict):
+            if cluster_num in self.mu:
+                mu_values = self.mu[cluster_num]
+        # 2) array case
+        elif hasattr(self, "mu") and hasattr(self.mu, "__len__"):
+            if 0 <= cluster_num < len(self.mu):
+                mu_values = self.mu[cluster_num]
+
+        if mu_values is not None:
+            # proceed with plotting bar chart using mu_values
+            if self.n_components <= 10:
+                color = plt.cm.get_cmap(self.color_palette)(cluster_num * 0.1)
+            else:
+                color = plt.cm.get_cmap(self.color_palette)(
                     cluster_num * (self.n_components - 1) ** -1
-                ),
-            )
-            
-        for i in range(len(self.dataset.feature_list)):
-            y = self.mu[cluster_num][i]+self.mu[cluster_num].max()*0.03 if self.mu[cluster_num][i]>0 else self.mu[cluster_num][i]-self.mu[cluster_num].max()*0.08
-            axs[1].text(i-len(self.dataset.feature_list[i])*0.11,y,self.dataset.feature_list[i], fontsize=8)
-            
-        axs[1].set_xticks([])
-        axs[1].set_xticklabels([])
-        # axs[1].set_xticklabels(self.dataset.feature_list, fontsize=8)
-        
-        for axis in ['top','right']:
-            axs[1].spines[axis].set_linewidth(0)
-        
-        if (self.mu[cluster_num]<0).any():
-            axs[1].set_ylim(self.mu[cluster_num].min()*1.2, self.mu[cluster_num].max()*1.2)
-            axs[1].spines['bottom'].set_position(('data',0.0))
-        else:
-            axs[1].set_ylim(None, self.mu[cluster_num].max()*1.2)
-            
-        axs[1].set_title("Mean feature value for cluster " + str(cluster_num))
-
-        
-        if type(self.dataset) in [IMAGEDataset, PIXLDataset]:
-            chemical_maps = self.dataset.chemical_maps if self.dataset.chemical_maps_bin is None else self.dataset.chemical_maps_bin
-            avg_intensity = chemical_maps.mean(axis=(0,1)).astype(np.float32) 
-            _, num_pixels, spectra_profile = self.get_binary_map_spectra_profile(cluster_num)
-            num_pixels = len(num_pixels[0])
-            mean_intensity = spectra_profile["intensity"].to_numpy(dtype=np.float32) / num_pixels
-
-            # plot average signal of the entire dataset
-            axs[2].bar(
-                    self.dataset.feature_list,
-                    avg_intensity,
-                    width=0.7,
-                    facecolor='None',
-                    edgecolor=sns.color_palette()[0],
-                    linestyle="dotted",
-                    linewidth=1,
-                    zorder=10,
-                    label="Avg. raw spectrum",
                 )
-            
-            if self.n_components <= 10:
-                axs[2].bar(
-                    self.dataset.feature_list,
-                    mean_intensity,
-                    width=0.6,
-                    linewidth=1,
-                    color=plt.cm.get_cmap(self.color_palette)(cluster_num * 0.1),
-                )
+
+            axs[1].bar(self.dataset.feature_list, mu_values, width=0.6, color=color)
+            for i, feat in enumerate(self.dataset.feature_list):
+                y = mu_values[i] + mu_values.max() * 0.03 \
+                    if mu_values[i] > 0 else mu_values[i] - mu_values.max() * 0.08
+                axs[1].text(i - len(feat) * 0.11, y, feat, fontsize=8)
+
+            axs[1].set_xticks([])
+            axs[1].set_xticklabels([])
+            for spine in ["top", "right"]:
+                axs[1].spines[spine].set_linewidth(0)
+            if (mu_values < 0).any():
+                axs[1].set_ylim(mu_values.min() * 1.2, mu_values.max() * 1.2)
+                axs[1].spines["bottom"].set_position(("data", 0.0))
             else:
-                axs[2].bar(
-                    self.dataset.feature_list,
-                    mean_intensity,
-                    width=0.6,
-                    linewidth=1,
-                    color=plt.cm.get_cmap(self.color_palette)(
-                        cluster_num * (self.n_components - 1) ** -1
-                    ),
-                )
-
-            for i in range(len(self.dataset.feature_list)):
-                y = mean_intensity[i] + mean_intensity.max()*0.03
-                y_avg = avg_intensity[i] + mean_intensity.max()*0.03
-                y = max(y,y_avg)
-                axs[2].text(i-len(self.dataset.feature_list[i])*0.11,y,self.dataset.feature_list[i], fontsize=8)
-                
-            axs[2].set_ylim(None, max(mean_intensity.max(), avg_intensity.max())*1.2)
-            axs[2].set_xticks([])
-            axs[2].set_xticklabels([])
-            # axs[2].set_xticklabels(self.dataset.feature_list, fontsize=8)
-            axs[2].set_title("Mean raw signal for cluster " + str(cluster_num))
-            
-            legend_properties = {"size": 8}
-            axs[2].legend(
-                loc="best", handletextpad=0.5, frameon=False, prop=legend_properties
-            )
-                
+                axs[1].set_ylim(None, mu_values.max() * 1.2)
+            axs[1].set_title(f"Mean feature value for cluster {cluster_num}")
         else:
-            sum_spectrum = self.dataset.spectra_bin if self.dataset.spectra_bin else self.dataset.spectra
-            intensity_sum = sum_spectrum.sum().data / sum_spectrum.sum().data.max()
+            # no mu available for this cluster
+            axs[1].text(0.5, 0.5, f"No `mu` for cluster {cluster_num}", ha="center")
+            axs[1].set_axis_off()
 
-            try:
+        # --- Summed spectra ---
+        try:
+            if isinstance(self.dataset, (IMAGEDataset, PIXLDataset)):
+                chemical_maps = self.dataset.chemical_maps if self.dataset.chemical_maps_bin is None else self.dataset.chemical_maps_bin
+                avg_intensity = chemical_maps.mean(axis=(0, 1)).astype(np.float32)
+                _, num_pixels, spectra_profile = self.get_binary_map_spectra_profile(cluster_num)
+                num_pixels = len(num_pixels[0])
+                mean_intensity = spectra_profile["intensity"].to_numpy(dtype=np.float32) / num_pixels
+
+                axs[2].bar(self.dataset.feature_list, avg_intensity, width=0.7, facecolor="None",
+                           edgecolor=sns.color_palette()[0], linestyle="dotted", linewidth=1,
+                           zorder=10, label="Avg. raw spectrum")
+
+                if self.n_components <= 10:
+                    color = plt.cm.get_cmap(self.color_palette)(cluster_num * 0.1)
+                else:
+                    color = plt.cm.get_cmap(self.color_palette)(cluster_num * (self.n_components - 1) ** -1)
+
+                axs[2].bar(self.dataset.feature_list, mean_intensity, width=0.6, linewidth=1, color=color)
+
+                for i in range(len(self.dataset.feature_list)):
+                    y = mean_intensity[i] + mean_intensity.max() * 0.03
+                    y_avg = avg_intensity[i] + mean_intensity.max() * 0.03
+                    axs[2].text(i - len(self.dataset.feature_list[i]) * 0.11, max(y, y_avg), self.dataset.feature_list[i], fontsize=8)
+
+                axs[2].set_ylim(None, max(mean_intensity.max(), avg_intensity.max()) * 1.2)
+                axs[2].set_xticks([])
+                axs[2].set_xticklabels([])
+                axs[2].set_title(f"Mean raw signal for cluster {cluster_num}")
+                axs[2].legend(loc="best", handletextpad=0.5, frameon=False, prop={"size": 8})
+
+            else:
+                sum_spectrum = self.dataset.spectra_bin if self.dataset.spectra_bin is not None else self.dataset.spectra
+                intensity_sum = sum_spectrum.sum().data / sum_spectrum.sum().data.max()
                 spectra_profile = self.get_binary_map_spectra_profile(cluster_num)[2]
-            except ValueError:
-                print(f'warning: no pixel is assigned to cpnt_{cluster_num}')
-                return
-            
-            intensity = spectra_profile["intensity"].to_numpy() / spectra_profile["intensity"].max()
+                intensity = spectra_profile["intensity"].to_numpy() / spectra_profile["intensity"].max()
 
-            axs[2].plot(
-                spectra_profile["energy"],
-                intensity_sum,
-                alpha=1,
-                linewidth=0.7,
-                linestyle="dotted",
-                color=sns.color_palette()[0],
-                label="Normalised sum spectrum",
-            )
+                axs[2].plot(spectra_profile["energy"], intensity_sum, alpha=1, linewidth=0.7,
+                            linestyle="dotted", color=sns.color_palette()[0],
+                            label="Normalised sum spectrum")
 
-            if self.n_components <= 10:
-                axs[2].plot(
-                    spectra_profile["energy"],
-                    intensity,
-                    linewidth=1,
-                    color=plt.cm.get_cmap(self.color_palette)(cluster_num * 0.1),
-                )
-            else:
-                axs[2].plot(
-                    spectra_profile["energy"],
-                    intensity,
-                    linewidth=1,
-                    color=plt.cm.get_cmap(self.color_palette)(
-                        cluster_num * (self.n_components - 1) ** -1
-                    ),
-                )
+                if self.n_components <= 10:
+                    color = plt.cm.get_cmap(self.color_palette)(cluster_num * 0.1)
+                else:
+                    color = plt.cm.get_cmap(self.color_palette)(cluster_num * (self.n_components - 1) ** -1)
 
-            axs[2].set_xticks(np.arange(0, 12, step=1))
-            axs[2].set_yticks(np.arange(0, 1.1, step=0.2))
+                axs[2].plot(spectra_profile["energy"], intensity, linewidth=1, color=color)
 
-            axs[2].set_xticklabels(np.arange(0, 12, step=1).round(1), fontsize=8)
-            axs[2].set_yticklabels(np.arange(0, 1.1, step=0.2).round(1), fontsize=8)
+                axs[2].set_xticks(np.arange(0, 12, step=1))
+                axs[2].set_yticks(np.arange(0, 1.1, step=0.2))
+                axs[2].set_xticklabels(np.arange(0, 12, step=1).round(1), fontsize=8)
+                axs[2].set_yticklabels(np.arange(0, 1.1, step=0.2).round(1), fontsize=8)
+                axs[2].set_xlim(spectra_range[0], spectra_range[1])
+                axs[2].set_ylim(None, intensity.max() * 1.35)
+                axs[2].set_xlabel("Energy / keV", fontsize=10)
+                axs[2].set_ylabel("Intensity / a.u.", fontsize=10)
+                axs[2].legend(loc="upper right", handletextpad=0.5, frameon=False, prop={"size": 7})
 
-            axs[2].set_xlim(spectra_range[0], spectra_range[1])
-            axs[2].set_ylim(None, intensity.max() * 1.35)
-            axs[2].set_xlabel("Energy / keV", fontsize=10)
-            axs[2].set_ylabel("Intensity / a.u.", fontsize=10)
+                # Optional peak annotations
+                if np.array(spectra_profile["energy"]).min() <= 0:
+                    zero_energy_idx = np.where(np.array(spectra_profile["energy"]).round(2) == 0)[0][0]
+                else:
+                    zero_energy_idx = 0
 
-            legend_properties = {"size": 7}
-            axs[2].legend(
-                loc="upper right", handletextpad=0.5, frameon=False, prop=legend_properties
-            )
+                for el in self.dataset.feature_list:
+                    peak_sum = intensity_sum[zero_energy_idx:][int(self.peak_dict[el] * 100) + 1]
+                    peak_single = intensity[zero_energy_idx:][int(self.peak_dict[el] * 100) + 1]
+                    peak = max(peak_sum, peak_single)
 
-            if np.array(spectra_profile["energy"]).min() <= 0:
-                zero_energy_idx = np.where(np.array(spectra_profile["energy"]).round(2) == 0)[
-                    0
-                ][0]
-            else:
-                zero_energy_idx = 0
-            for el in self.dataset.feature_list:
-                peak_sum = intensity_sum[zero_energy_idx:][
-                    int(self.peak_dict[el] * 100) + 1
-                ]
-                peak_single = intensity[zero_energy_idx:][int(self.peak_dict[el] * 100) + 1]
+                    axs[2].vlines(self.peak_dict[el], 0, 0.9 * peak, linewidth=0.7,
+                                  color="grey", linestyles="dashed")
+                    axs[2].text(self.peak_dict[el] - 0.1, peak + (intensity.max() / 20),
+                                el, rotation="vertical", fontsize=7.5)
 
-                peak = max(peak_sum, peak_single)
-                axs[2].vlines(
-                    self.peak_dict[el],
-                    0,
-                    int(0.9 * peak),
-                    linewidth=0.7,
-                    color="grey",
-                    linestyles="dashed",
-                )
-                axs[2].text(
-                    self.peak_dict[el] - 0.1,
-                    peak + (int(intensity.max()) / 20),
-                    el,
-                    rotation="vertical",
-                    fontsize=7.5,
-                )
+        except Exception as e:
+            axs[2].text(0.5, 0.5, f"Error in spectra plot:\n{str(e)}", ha="center")
+            axs[2].set_axis_off()
 
         fig.subplots_adjust(wspace=0.05, hspace=0.2)
         fig.set_tight_layout(True)

@@ -45,14 +45,41 @@ class SEMDataset(BaseDataset):
             self.nav_img = nav_img
             self.original_spectra = self.base_dataset
             self.spectra = self.base_dataset
+            
+        #for .rpl files from AZTEC
+        elif file_path.endswith('.rpl'):
+            self.base_dataset=self.base_dataset.transpose()
+            
+            #setting up the units as the rpl file has none
+            self.base_dataset.axes_manager[2].name='Energy'
+            self.base_dataset.axes_manager[2].units='keV'
+            
+            self.base_dataset.set_signal_type('EDS_SEM')
+            
+            self.base_dataset.axes_manager[2].scale=20/2048 ### WILL NEED TO CHANGE THIS LINE ONCE THE PAR FILES ARE AVAILABLE
+            
+            nav_img = Signal2D(self.base_dataset.sum(axis=2).data).T
+            
+            self.original_nav_img = nav_img
+            self.nav_img = nav_img
+            self.original_spectra = self.base_dataset
+            self.spectra = self.base_dataset
+            
+            #need to add way to calibrate with the EDS.par file 
+            #but first need to obtain the EDS.par files...
+        
         
         self.spectra.change_dtype("float32")  # change spectra data from unit8 into float32
         
         # reserve a copy of the raw data for quantification
         self.spectra_raw = self.spectra.deepcopy()
-
-        self.feature_list = self.spectra.metadata.Sample.xray_lines
-        self.feature_dict = {el: i for (i, el) in enumerate(self.feature_list)}
+        try:
+            self.feature_list = self.spectra.metadata.Sample.xray_lines
+            self.feature_dict = {el: i for (i, el) in enumerate(self.feature_list)}
+        except AttributeError:
+            print('Unable to read X-Ray lines from sample metadata, setting blank list')
+            self.spectra.metadata.set_item('Sample.xray_lines',[])
+            
 
 class IMAGEDataset(object):
     def __init__(self, 

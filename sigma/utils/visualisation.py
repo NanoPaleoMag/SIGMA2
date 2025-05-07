@@ -141,12 +141,12 @@ def plot_intensity_maps(spectra, element_list, colors=[], save=None):
             if cur_peak > num_peak - 1:  # delete the extra subfigures
                 fig.delaxes(axs[i, j])
             else:
-                if num_peak > 4:
-                    axs_sub = axs[i, j]
-                elif num_peak == 1:
-                    axs_sub = axs
+                if isinstance(axs, np.ndarray):
+                    axs_flat = axs.flatten()
+                    axs_sub = axs_flat[cur_peak]
                 else:
-                    axs_sub = axs[j]
+                    axs_sub = axs
+
 
                 el = element_list[cur_peak]
                 if (type(spectra) is EDSSEMSpectrum) or (type(spectra) is EDSTEMSpectrum):
