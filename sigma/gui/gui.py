@@ -1548,8 +1548,10 @@ def plot_ternary_composition(ps:PixelSegmenter):
 
 
 from plotly.subplots import make_subplots
-from ipywidgets import Button, Output, ToggleButtons, Dropdown, HBox, VBox, Layout, ColorPicker
+from ipywidgets import Button, Output, ToggleButtons, Dropdown, HBox, VBox, Layout, ColorPicker, HTML
 from IPython.display import clear_output
+
+from IPython.display import HTML as IPyHTML
 
 
 from collections import defaultdict
@@ -1740,20 +1742,34 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
             
             
     # Click handler
+
+            
     def on_point_click(trace, points, selector):
         for i in points.point_inds:
             cluster_id = int(trace.customdata[i][0])
 
-            # Skip noise (cluster -1)
+            # Skip noise
             if cluster_id == -1:
-                continue  # Ignore noise cluster (-1)
+                continue
 
-            # Add valid cluster IDs to the selected_clusters set
             selected_clusters.add(cluster_id)
 
-        # Print out the selected clusters, excluding noise
+            # Update color info display
+            color_hex = get_color(cluster_id)
+            r, g, b = tuple(int(color_hex[i:i+2], 16) for i in (1, 3, 5))
+            rgb_str = f'rgb({r}, {g}, {b})'
+
+            color_info_box.value = (
+                f"<div style='padding:4px;'>"
+                f"<b>Cluster {cluster_id}</b><br>"
+                f"<div style='width:50px; height:20px; background:{color_hex}; border:1px solid #000;'></div><br>"
+                f"<b>HEX:</b> {color_hex}<br><b>RGB:</b> {rgb_str}"
+                f"</div>"
+            )
+
         with out:
             print(f"Clicked cluster(s): {sorted(selected_clusters)}")
+
 
     
     #toggle switch to handle unassigned points when creating new cluster
@@ -1765,6 +1781,8 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
     )
     
     
+    
+    
     standard_button_layout = Layout(width='150px', height='35px')
 
     reset_button = Button(description="Reset", layout=standard_button_layout)
@@ -1774,6 +1792,13 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
     recolor_button = Button(description="Recolour Selection", layout=standard_button_layout)
     select_points_button = Button(description="Select Points", layout=standard_button_layout)
     create_cluster_button = Button(description="Create Cluster", layout=standard_button_layout)
+    
+    color_info_box = HTML(
+    value="<b>No cluster selected</b>",
+    placeholder='Color Info',
+    description='',
+    layout=Layout(margin='10px 0px')
+)
 
 
 
@@ -1961,32 +1986,10 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
 
 
     def on_output_clicked(b):
-        nonlocal new_ps
         with out:
-            print('Clicked output')
-
-        if not merged_clusters:
-            with out:
-                print("No merged clusters to output.")
-            return
-        else:
-            with out:
-                print("Merging Clusters...")
-                new_labels = labels.copy()
-                for merged_id, originals in merged_clusters.items():
-                    for original in originals:
-                        new_labels[labels == original] = merged_id
-        
-                # Create a new PixelSegmenter instance
-                new_ps = PixelSegmenter(
-                    dataset=ps.dataset,
-                    latent=ps.latent)
-                new_ps.labels=new_labels
-                new_ps.n_components=len(set(new_labels.flatten()))
-                compute_mu(new_ps)
-
-                
-                print("✅ New PixelSegmenter object created!")
+            out.clear_output()
+            print("✅ To use the updated PixelSegmenter, call the function returned by interactive_latent_plot().")
+            
                 
     # Color picker options (define however many you want)
     # Build a color selector UI
@@ -2093,16 +2096,39 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
         top_row,
         second_row,
         third_row,
-        fourth_row,
+        color_info_box,
         color_selector_ui,
         color_picker,
         fig,
+        fourth_row,
         confirm_out,
         out
     ]))
 
 
 
+    def get_new_ps():
+        current_labels = ps.labels.copy()
+        # Apply merged cluster mappings
+        if merged_clusters:
+            cluster_map = {}
+            for merged_id, originals in merged_clusters.items():
+                for original in originals:
+                    cluster_map[original] = merged_id
+            for i in range(len(current_labels)):
+                if current_labels[i] in cluster_map:
+                    current_labels[i] = cluster_map[current_labels[i]]
 
+        new_ps = PixelSegmenter(
+            dataset=ps.dataset,
+            latent=ps.latent
+        )
+        new_ps.labels = current_labels
+        new_ps.n_components = len(set(current_labels.flatten()))
+        new_ps.cluster_colors = ps.cluster_colors.copy()  # preserve recoloring
+        compute_mu(new_ps)
+        return new_ps
+
+    
     # Return access function for new object
-    return lambda: new_ps
+    return lambda: get_new_ps
