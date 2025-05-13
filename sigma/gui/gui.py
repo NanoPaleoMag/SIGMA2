@@ -850,48 +850,91 @@ def check_latent_space(ps: PixelSegmenter, ratio_to_be_shown=0.25, show_map=Fals
 def show_cluster_distribution(ps: PixelSegmenter, **kwargs):
     from IPython.display import display
     import ipywidgets as widgets
-    
-    #recomputing mu
-    lbls = set(ps.labels.flatten())
-    if not isinstance(ps.mu, dict) or not lbls.issubset(ps.mu.keys()):
-        compute_mu(ps)
 
-    # Get all unique clusters from labels, excluding noise (-1)
-    all_clusters = sorted(set(ps.labels[ps.labels >= 0]))
-    cluster_options = [f"cluster_{n}" for n in all_clusters]
+    # Utility: Get current non-empty cluster labels
+    def get_current_clusters():
+        current_labels = ps.labels
+        unique_labels = sorted(set(current_labels.flatten()))
+        return [c for c in unique_labels if c >= 0 and np.sum(current_labels == c) > 0]
 
-    # Create widget for selecting clusters
-    multi_select_cluster = widgets.SelectMultiple(options=["All"] + cluster_options)
+    # Recompute stats (mu, label shape etc.)
+    refresh_cluster_statistics(ps)
+
+    # Prepare cluster options
+    current_clusters = get_current_clusters()
+    cluster_options = [f"cluster_{n}" for n in current_clusters]
+
+    # Widgets
+    cluster_selector = widgets.SelectMultiple(
+        options=["All"] + cluster_options,
+        value=("All",),
+        description="Clusters:"
+    )
+
+    format_selector = widgets.Dropdown(
+        options=["png", "svg", "pdf"],
+        value="png",
+        description="Save as:"
+    )
+
+    save_button = widgets.Button(description="💾 Save Plot")
+
     plots_output = widgets.Output()
+    control_bar = widgets.HBox([cluster_selector, format_selector, save_button])
 
+    # Helper: Save figure list to files
+    def save_fig(figs, fmt):
+        import os
+        from datetime import datetime
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_dir = f"cluster_plots_{timestamp}"
+        os.makedirs(out_dir, exist_ok=True)
+
+        for i, fig in enumerate(figs):
+            path = os.path.join(out_dir, f"cluster_{i}.{fmt}")
+            fig.savefig(path, format=fmt, bbox_inches="tight")
+        print(f"Saved {len(figs)} figure(s) to: {out_dir}")
+
+    # Main plotting function
     def plot_clusters(cluster_indices):
-        plots_output.clear_output()
-        all_fig = []
+        plots_output.clear_output(wait=True)
+        all_figs = []
+
         with plots_output:
             for i in cluster_indices:
                 try:
                     fig = ps.plot_single_cluster_distribution(cluster_num=i, **kwargs)
-                    all_fig.append(fig)
+                    all_figs.append(fig)
                 except Exception as e:
                     print(f"Skipping cluster {i} due to error: {e}")
-        save_fig(all_fig)
-        display(plots_output)
+        return all_figs
 
-    # Initial render: show all clusters
-    plot_clusters(all_clusters)
-
-    # Handle widget changes
-    def eventhandler(change):
+    # Event: Cluster selection changed
+    def on_cluster_selection(change):
         selected = change.new
         if selected == ("All",):
-            plot_clusters(all_clusters)
+            selected_indices = get_current_clusters()
         else:
             selected_indices = [int(c.split("_")[1]) for c in selected]
-            plot_clusters(selected_indices)
+        nonlocal current_figs
+        current_figs = plot_clusters(selected_indices)
 
-    multi_select_cluster.observe(eventhandler, names="value")
+    # Event: Save button clicked
+    def on_save_clicked(_):
+        if current_figs:
+            save_fig(current_figs, format_selector.value)
 
-    display(multi_select_cluster)
+    # Attach handlers
+    cluster_selector.observe(on_cluster_selection, names="value")
+    save_button.on_click(on_save_clicked)
+
+    # Display everything
+    display(control_bar)
+    display(plots_output)
+
+    # Initial plot
+    current_figs = plot_clusters(current_clusters)
 
 #sigma2 improvement
 #need a helper function to aid with plotting in view_phase_map
@@ -1152,19 +1195,23 @@ def show_unmixed_weights_and_compoments(
     tab.set_title(3, "Single component")
     display(tab)
 
+
 def view_clusters_sum_spectra(ps: PixelSegmenter, normalisation=True, spectra_range=(0, 8)):
-    # Get unique cluster IDs excluding -1
-    all_cluster_ids = sorted(c for c in set(ps.labels.flatten()) if c != -1)
+    # Get actual cluster IDs in current label map (excluding -1)
+    current_labels = ps.labels
+    all_cluster_ids = sorted(int(c) for c in np.unique(current_labels) if c != -1)
 
     # Filter out clusters with no assigned pixels
-    non_empty_clusters = [c for c in all_cluster_ids if np.sum(ps.labels == c) > 0]
+    non_empty_clusters = [c for c in all_cluster_ids if np.sum(current_labels == c) > 0]
     cluster_options = [f"cluster_{c}" for c in non_empty_clusters]
 
+    # UI widgets
     multi_select = widgets.SelectMultiple(options=cluster_options)
     plots_output = widgets.Output()
     profile_output = widgets.Output()
-
     figs = []
+
+    # Initial display: if no selection, show all clusters
     with plots_output:
         for cluster_id in non_empty_clusters:
             try:
@@ -1177,39 +1224,82 @@ def view_clusters_sum_spectra(ps: PixelSegmenter, normalisation=True, spectra_ra
             except ValueError:
                 print(f"Skipping empty cluster {cluster_id}")
 
+    with profile_output:
+        for cluster_id in non_empty_clusters:
+            try:
+                _, _, spectra_profile = ps.get_binary_map_spectra_profile(
+                    cluster_num=cluster_id,
+                    use_label=True,
+                )
+                visual.plot_profile(
+                    spectra_profile["energy"],
+                    spectra_profile["intensity"],
+                    ps.peak_list,
+                )
+            except ValueError:
+                print(f"No spectra to plot for cluster {cluster_id}")
+
+    # Callback for dropdown change
     def eventhandler(change):
+        selected = change.new
+        selected_cluster_ids = [int(name.split("_")[1]) for name in selected]
+
         plots_output.clear_output()
         profile_output.clear_output()
 
         with plots_output:
-            for cluster in change.new:
-                cluster_id = int(cluster.split("_")[1])
-                try:
-                    fig = ps.plot_binary_map_spectra_profile(
-                        cluster_num=cluster_id,
-                        normalisation=normalisation,
-                        spectra_range=spectra_range,
-                    )
-                except ValueError:
-                    print(f"Skipping empty cluster {cluster_id}")
+            if not selected_cluster_ids:
+                for cluster_id in non_empty_clusters:
+                    try:
+                        fig = ps.plot_binary_map_spectra_profile(
+                            cluster_num=cluster_id,
+                            normalisation=normalisation,
+                            spectra_range=spectra_range,
+                        )
+                    except ValueError:
+                        print(f"Skipping empty cluster {cluster_id}")
+            else:
+                for cluster_id in selected_cluster_ids:
+                    try:
+                        fig = ps.plot_binary_map_spectra_profile(
+                            cluster_num=cluster_id,
+                            normalisation=normalisation,
+                            spectra_range=spectra_range,
+                        )
+                    except ValueError:
+                        print(f"Skipping empty cluster {cluster_id}")
 
         with profile_output:
-            for cluster in change.new:
-                cluster_id = int(cluster.split("_")[1])
-                try:
-                    _, _, spectra_profile = ps.get_binary_map_spectra_profile(
-                        cluster_num=cluster_id, use_label=True
-                    )
-                    visual.plot_profile(
-                        spectra_profile["energy"],
-                        spectra_profile["intensity"],
-                        ps.peak_list,
-                    )
-                except ValueError:
-                    print(f"No spectra to plot for empty cluster {cluster_id}")
+            if not selected_cluster_ids:
+                for cluster_id in non_empty_clusters:
+                    try:
+                        _, _, spectra_profile = ps.get_binary_map_spectra_profile(
+                            cluster_num=cluster_id, use_label=True
+                        )
+                        visual.plot_profile(
+                            spectra_profile["energy"],
+                            spectra_profile["intensity"],
+                            ps.peak_list,
+                        )
+                    except ValueError:
+                        print(f"No spectra to plot for cluster {cluster_id}")
+            else:
+                for cluster_id in selected_cluster_ids:
+                    try:
+                        _, _, spectra_profile = ps.get_binary_map_spectra_profile(
+                            cluster_num=cluster_id, use_label=True
+                        )
+                        visual.plot_profile(
+                            spectra_profile["energy"],
+                            spectra_profile["intensity"],
+                            ps.peak_list,
+                        )
+                    except ValueError:
+                        print(f"No spectra to plot for cluster {cluster_id}")
 
     multi_select.observe(eventhandler, names="value")
 
+    # Display widgets
     display(multi_select)
     save_fig(figs)
 
@@ -1217,8 +1307,6 @@ def view_clusters_sum_spectra(ps: PixelSegmenter, normalisation=True, spectra_ra
     tab.set_title(0, "clusters + spectra")
     tab.set_title(1, "spectra")
     display(tab)
-
-
 
 #utility function
 def get_non_empty_clusters(ps: PixelSegmenter):
@@ -1579,6 +1667,8 @@ import plotly.graph_objs as go
 
 #helper function for recomputing average compositions after creating new clusters
 
+
+
 def compute_mu(ps):
     # pull out the elemental data
     X = ps.dataset.normalised_elemental_data
@@ -1599,6 +1689,22 @@ def compute_mu(ps):
         else:
             mu[k] = np.zeros(X.shape[1], dtype=X.dtype)
     ps.mu = mu
+
+
+def refresh_cluster_statistics(ps):
+    compute_mu(ps)
+
+    # If using H x W images, reshape labels if needed
+    if ps.labels.ndim == 1 and hasattr(ps, "height") and hasattr(ps, "width"):
+        ps.labels = ps.labels.reshape((ps.height, ps.width))
+
+    # Optionally invalidate or recompute prob_map
+    if hasattr(ps, "prob_map"):
+        ps.prob_map = None  # or recompute based on updated clustering
+
+    # Force recompute of anything cached in get_binary_map_spectra_profile
+    if hasattr(ps, "spectra_cache"):
+        ps.spectra_cache = {}  # clear any old cache
 
 
 
@@ -1777,7 +1883,7 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5, n_colours=30):
         selected_point_indices.clear()
         new_cluster_mode[0] = False
         update_cluster_colors()
-        compute_mu(ps)
+        refresh_cluster_statistics(ps)
         with out:
             out.clear_output()
             print(f"✅ Created new cluster {new_cluster_id} with {count} points.")
@@ -1815,7 +1921,7 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5, n_colours=30):
         ps.n_components = len(set(ps.labels.flatten()))
         selected_clusters.clear()
         update_cluster_colors()
-        compute_mu(ps)
+        refresh_cluster_statistics(ps)
 
         with out:
             out.clear_output()
@@ -1841,7 +1947,7 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5, n_colours=30):
                 labels = ps.labels
                 ps.n_components = len(set(labels.flatten()))
                 update_cluster_colors()
-                compute_mu(ps)
+                refresh_cluster_statistics(ps)
                 confirm_out.clear_output()
                 out.clear_output()
                 print("✅ Full reset complete.")

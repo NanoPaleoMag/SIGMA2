@@ -820,15 +820,14 @@ class PixelSegmenter(object):
     def plot_binary_map_spectra_profile(
         self, cluster_num, normalisation=True, spectra_range=(0, 8), **kwargs
     ):
-
         binary_map, binary_map_indices, spectra_profile = self.get_binary_map_spectra_profile(
-            cluster_num, use_label=False
+            cluster_num, use_label=True
         )
 
         if type(self.dataset) not in [IMAGEDataset, PIXLDataset]:
             ncols, figsize, gridspec_kw = 3, (13, 3), {"width_ratios": [1, 1, 2]}
         else:
-            ncols, figsize, gridspec_kw = 2, (6,3), None
+            ncols, figsize, gridspec_kw = 2, (6, 3), None
 
         fig, axs = plt.subplots(
             nrows=1,
@@ -840,7 +839,7 @@ class PixelSegmenter(object):
         )
 
         phase_color = plt.cm.get_cmap(self.color_palette)(
-            cluster_num * (self.n_components - 1) ** -1
+            cluster_num / (self.n_components - 1)
         )
         c = mcolors.ColorConverter().to_rgb
 
@@ -857,62 +856,52 @@ class PixelSegmenter(object):
         if type(self.dataset) not in [IMAGEDataset, PIXLDataset]:
             nav_img = self.dataset.nav_img_bin.data if self.dataset.nav_img_bin else self.dataset.nav_img.data
         else:
-            if self.dataset.intensity_map.shape[:2]!= self.dataset.chemical_maps.shape[:2]: # if size of intensity map is different from chemical maps
-                nav_img = resize(self.dataset.intensity_map, self.dataset.chemical_maps.shape[:2]) 
+            if self.dataset.intensity_map.shape[:2] != self.dataset.chemical_maps.shape[:2]:
+                nav_img = resize(self.dataset.intensity_map, self.dataset.chemical_maps.shape[:2])
             else:
                 nav_img = self.dataset.intensity_map
+
         axs[1].imshow(nav_img, cmap="gray", interpolation="none", alpha=0.9)
         axs[1].scatter(
             binary_map_indices[1], binary_map_indices[0], c="r", alpha=0.2, s=1.5
         )
         axs[1].grid(False)
         axs[1].axis("off")
-        axs[1].set_title("Navigation Sigmal + Binary Map", fontsize=10)
+        axs[1].set_title("Navigation Signal + Binary Map", fontsize=10)
 
         if type(self.dataset) not in [IMAGEDataset, PIXLDataset]:
-            if normalisation:
-                intensity = (
-                    spectra_profile["intensity"].to_numpy() / spectra_profile["intensity"].max()
-                )
-            else:
-                intensity = spectra_profile["intensity"].to_numpy()
+            intensity = spectra_profile["intensity"].to_numpy()
+            if normalisation and intensity.max() > 0:
+                intensity = intensity / intensity.max()
 
-            if self.n_components <= 10:
-                axs[2].plot(
-                    spectra_profile["energy"],
-                    intensity,
-                    linewidth=1,
-                    color=plt.cm.get_cmap(self.color_palette)(cluster_num * 0.1),
-                )
-            else:
-                axs[2].plot(
-                    spectra_profile["energy"],
-                    intensity,
-                    linewidth=1,
-                    color=plt.cm.get_cmap(self.color_palette)(
-                        cluster_num * (self.n_components - 1) ** -1
-                    ),
-                )
+            energy = spectra_profile["energy"].to_numpy()
 
-            if np.array(spectra_profile["energy"]).min() <= 0.0:
-                zero_energy_idx = np.where(np.array(spectra_profile["energy"]).round(2) == 0)[
-                    0
-                ][0]
-            else:
-                zero_energy_idx = 0
+            color = (
+                plt.cm.get_cmap(self.color_palette)(cluster_num * 0.1)
+                if self.n_components <= 10
+                else plt.cm.get_cmap(self.color_palette)(cluster_num / (self.n_components - 1))
+            )
+
+            axs[2].plot(energy, intensity, linewidth=1, color=color)
+
+            # Plot peak lines
             for el in self.peak_list:
-                peak = intensity[zero_energy_idx:][int(self.peak_dict[el] * 100) + 1]
+                peak_energy = self.peak_dict.get(el)
+                if peak_energy is None:
+                    continue
+
+                idxs = np.where(np.isclose(energy, peak_energy, atol=0.01))[0]
+                if len(idxs) == 0:
+                    continue
+                peak_idx = idxs[0]
+                peak_value = intensity[peak_idx]
+
                 axs[2].vlines(
-                    self.peak_dict[el],
-                    0,
-                    int(0.9 * peak),
-                    linewidth=0.7,
-                    color="grey",
-                    linestyles="dashed",
+                    peak_energy, 0, 0.9 * peak_value, linewidth=0.7, color="grey", linestyles="dashed"
                 )
                 axs[2].text(
-                    self.peak_dict[el] - 0.1,
-                    peak + (int(intensity.max()) / 20),
+                    peak_energy - 0.1,
+                    peak_value + (intensity.max() / 20),
                     el,
                     rotation="vertical",
                     fontsize=8,
@@ -928,30 +917,19 @@ class PixelSegmenter(object):
                 axs[2].set_yticklabels(np.arange(0, 1.1, step=0.2).round(1), fontsize=8)
             else:
                 try:
-                    axs[2].set_yticks(
-                        np.arange(
-                            0,
-                            int(intensity.max().round()) + 1,
-                            step=int((intensity.max().round() / 5)),
-                        )
-                    )
-                    axs[2].set_yticklabels(
-                        np.arange(
-                            0,
-                            int(intensity.max().round()) + 1,
-                            step=int((intensity.max().round() / 5)),
-                        ),
-                        fontsize=8,
-                    )
+                    ymax = intensity.max().round()
+                    step = max(1, int(ymax / 5))
+                    yticks = np.arange(0, int(ymax) + 1, step=step)
+                    axs[2].set_yticks(yticks)
+                    axs[2].set_yticklabels(yticks, fontsize=8)
                 except ZeroDivisionError:
                     pass
-            
+
             axs[2].set_xlim(spectra_range[0], spectra_range[1])
             axs[2].set_ylim(None, intensity.max() * 1.2)
             axs[2].set_xlabel("Energy / keV", fontsize=10)
             axs[2].set_ylabel("X-rays / Counts", fontsize=10)
 
-        # fig.subplots_adjust(left=0.1)
         plt.tight_layout()
         plt.show()
         return fig
