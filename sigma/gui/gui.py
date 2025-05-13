@@ -29,6 +29,8 @@ import ipywidgets as widgets
 from ipywidgets import Layout
 from IPython.display import display
 
+import matplotlib.colors as mcolors
+
 # to make sure the plot function works
 from plotly.offline import init_notebook_mode
 
@@ -905,93 +907,102 @@ def parse_rgb_string(s):
     raise ValueError(f"Invalid RGB string: {s}")
 
 
-
 def view_phase_map(ps, alpha_cluster_map=0.6):
-    import matplotlib.pyplot as plt
-    import matplotlib.colors as mcolors
-    from matplotlib.colors import ListedColormap
-    import numpy as np
 
-    # Get cluster labels excluding -1 (noise clusters)
-    valid_labels = sorted(set(ps.labels.flatten()) - {-1})
+    def build_color_map():
+        labels = ps.labels.flatten()
+        valid_labels = sorted(set(labels) - {-1})
+        cluster_colors = {}
 
+        use_cluster_colors = hasattr(ps, "cluster_colors") and ps.cluster_colors
+        if use_cluster_colors:
+            for label in valid_labels:
+                raw_color = ps.cluster_colors.get(label, "#000000")
+                try:
+                    rgb = mcolors.to_rgb(raw_color)
+                except ValueError:
+                    rgb = parse_rgb_string(raw_color)
+                cluster_colors[label] = rgb
+        else:
+            cmap = plt.get_cmap(ps.color_palette)
+            for i, label in enumerate(valid_labels):
+                cluster_colors[label] = cmap(i / max(1, len(valid_labels) - 1))
 
-    # Use ps.cluster_colors if available, fallback to default color_palette
-    use_cluster_colors = hasattr(ps, "cluster_colors") and ps.cluster_colors
-    if use_cluster_colors:
-        # Clean colors: convert to hex if necessary
-        cluster_color_list = []
+        return valid_labels, cluster_colors
+
+    def render_plot():
+        nonlocal cluster_colors
+
+        nav_img_data = ps.nav_img.data
+        if nav_img_data.ndim == 2:
+            nav_img_rgb = np.stack([nav_img_data]*3, axis=-1)
+        elif nav_img_data.ndim == 3 and nav_img_data.shape[0] == 3:
+            nav_img_rgb = np.moveaxis(nav_img_data, 0, -1)
+        elif nav_img_data.shape[-1] == 3:
+            nav_img_rgb = nav_img_data
+        else:
+            raise ValueError("Unsupported navigation image format.")
+
+        nav_img_rgb = nav_img_rgb.astype(np.float32)
+        nav_img_rgb /= nav_img_rgb.max()
+
+        phase = ps.labels.reshape(ps.height, ps.width)
+
+        # Cluster overlay map
+        cluster_map_rgb = np.zeros_like(nav_img_rgb)
         for label in valid_labels:
-            raw_color = ps.cluster_colors.get(label, "#000000")
-            try:
-                rgb = mcolors.to_rgb(raw_color)
-            except ValueError:
-                rgb = parse_rgb_string(raw_color)
-            cluster_color_list.append(mcolors.to_hex(rgb))
+            mask = phase == label
+            color = cluster_colors[label]
+            for i in range(3):
+                cluster_map_rgb[..., i][mask] = color[i]
 
-    else:
-        # Fall back to default color palette using current cmap
-        cmap = plt.get_cmap(ps.color_palette)
-        cluster_color_list = [
-            mcolors.to_hex(cmap(i / max(1, len(valid_labels) - 1)))
-            for i in range(len(valid_labels))
-        ]
-
-    layout_format = Layout(width="18%", style={"description_width": "initial"})
-    color_pickers = [
-        widgets.ColorPicker(value=color, description=f"cluster_{label}", layout=layout_format)
-        for label, color in zip(valid_labels, cluster_color_list)
-    ]
-
-    # Build initial color map
-    cluster_color_rgb = []
-    for c in cluster_color_list:
-        try:
-            cluster_color_rgb.append(mcolors.to_rgb(c))
-        except ValueError:
-            cluster_color_rgb.append(parse_rgb_string(c))
-
-    # Add gray color for cluster -1 (noise)
-    noise_color = "#999999"  # Gray color for noise
-    cluster_color_rgb.append(mcolors.to_rgb(noise_color))  # Append gray to the colormap
-
-    # Create the colormap (including noise color)
-    cluster_color_map = ListedColormap(cluster_color_rgb)
-
-    # Mask phase map for the noise cluster (-1) to make it transparent
-    phase = ps.labels.reshape(ps.height, ps.width)
-    phase_masked = phase.astype(float)
-    phase_masked[phase == -1] = np.nan  # Replace -1 (noise) with NaN
-
-    out = widgets.Output()
-    with out:
-        fig = ps.plot_phase_map(
-            cmap=cluster_color_map,
-            alpha_cluster_map=alpha_cluster_map,
-            phase_override=phase_masked  # ✅ now passing masked phase map
+        overlay_rgb = (
+            alpha_cluster_map * cluster_map_rgb + (1 - alpha_cluster_map) * nav_img_rgb
         )
-        plt.show()
-        save_fig(fig)
+        overlay_rgb = np.clip(overlay_rgb, 0, 1)
 
-    def change_color(_):
         out.clear_output()
-        
-        updated_colors = []
-        for picker in color_pickers:
-            try:
-                updated_colors.append(mcolors.to_rgb(picker.value))
-            except ValueError:
-                updated_colors.append(parse_rgb_string(picker.value))
-        newcmp = ListedColormap(updated_colors)
-
-        # Update cluster_colors (so downstream uses are in sync)
-        ps.cluster_colors = {label: mcolors.to_hex(rgb) for label, rgb in zip(valid_labels, updated_colors)}
-        ps.set_color_palette(newcmp)  # If you want to update internal palette too
-
         with out:
-            fig = ps.plot_phase_map(cmap=newcmp, alpha_cluster_map=alpha_cluster_map)
+            fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+
+            axs[0].imshow(nav_img_rgb)
+            axs[0].set_title("Navigation Image")
+            axs[0].axis("off")
+
+            axs[1].imshow(overlay_rgb)
+            axs[1].set_title("Cluster Overlay")
+            axs[1].axis("off")
+
+            plt.tight_layout()
             plt.show()
             save_fig(fig)
+
+    # Initialize
+    valid_labels, cluster_colors = build_color_map()
+
+    # UI Elements
+    layout_format = Layout(width="18%", style={"description_width": "initial"})
+    color_pickers = [
+        widgets.ColorPicker(value=mcolors.to_hex(cluster_colors[label]), description=f"cluster_{label}", layout=layout_format)
+        for label in valid_labels
+    ]
+
+    out = widgets.Output()
+    render_plot()
+
+    def change_color(_):
+        nonlocal cluster_colors
+        updated_colors = {}
+        for label, picker in zip(valid_labels, color_pickers):
+            try:
+                rgb = mcolors.to_rgb(picker.value)
+            except ValueError:
+                rgb = parse_rgb_string(picker.value)
+            updated_colors[label] = rgb
+
+        ps.cluster_colors = {label: mcolors.to_hex(rgb) for label, rgb in updated_colors.items()}
+        cluster_colors = updated_colors
+        render_plot()
 
     button = widgets.Button(description="Set", layout=Layout(width="auto"))
     button.on_click(change_color)
@@ -1000,8 +1011,7 @@ def view_phase_map(ps, alpha_cluster_map=0.6):
     color_box = widgets.VBox([*color_rows, button], layout=Layout(flex="2 1 0%", width="auto"))
     out_box = widgets.Box([out], layout=Layout(flex="8 1 0%", width="auto"))
 
-    final_box = widgets.VBox([color_box, out_box])
-    display(final_box)
+    display(widgets.VBox([out_box, color_box]))
 
 def show_unmixed_weights(weights: pd.DataFrame):
     weights_options = weights.index
@@ -1557,6 +1567,15 @@ from IPython.display import HTML as IPyHTML
 from collections import defaultdict
 
 
+import pandas as pd
+import random
+import matplotlib.cm as cm
+from ipywidgets import (
+    Button, Layout, ToggleButtons, VBox, HBox, HTML, ColorPicker, Output
+)
+import plotly.graph_objs as go
+
+
 
 #helper function for recomputing average compositions after creating new clusters
 
@@ -1583,94 +1602,71 @@ def compute_mu(ps):
 
 
 
-def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
+def interactive_latent_plot(ps, ratio_to_be_shown=0.5, n_colours=30):
+    
     """
-    Interactive GUI for merging the colours of the clusters in the latent space plot.
-    
-    Start by clicking the cluster(s) you wish to be rendered the samae colour.
-    
-    Also allows clusters to be selected using lasso/rectangle tool
-    
-    Pressing the 'Merge Clusters' button will re-render the plot, with these clusters being the same colour.
-    
-    Parameters
+    Interactive GUI for clustering in the latent space of a PixelSegmenter object.
+
+    Allows:
+    - Cluster selection by clicking or using lasso/rectangle
+    - Recoloring selected clusters
+    - Merging selected clusters (in-place)
+    - Creating new clusters by selecting individual points
+
+    Parameters:
     -----------
-    ps :                PixelSegmenter object
-                        The PixelSegmenter object to be visualised.
-         
+    ps : PixelSegmenter
+        The object to be visualized.
     ratio_to_be_shown : float
-                        The proportion of points to be shown. Default = 0.5, so half the points. 
-                        Can improve rendering times by reducing this value.
-                        
-    n_colours :         int
-                        Number of colours to display that the user may choose from
-    
-    
-    
+        Fraction of latent points to display (for performance).
+    n_colours : int
+        Number of color swatches in the palette.
     """
     
-    manual_cluster_colors = {}  # cluster_id -> RGB string
-    original_palette='%s' % ps.color_palette #copying the original color palette
-    
+
+
+
+    manual_cluster_colors = {}
+    original_palette = '%s' % ps.color_palette
     original_labels = ps.labels.copy()
 
-    
-    #for creating new clusters
-    selected_point_indices = set()  # for new cluster selection
-    new_cluster_mode = [False]  # wrapped in list for mutability
-    
-    original_cluster_colors = {
-        i: "#{:02x}{:02x}{:02x}".format(
-            int(r * 255), int(g * 255), int(b * 255)
-        )
-        for i, (r, g, b, _) in enumerate(
-            cm.get_cmap(original_palette)(np.linspace(0, 1, ps.n_components))
-        )
-    } #getting the original cluster colors object.
+    def update_cluster_colors():
+        valid_labels = sorted(set(ps.labels.flatten()) - {-1})
+        cmap = cm.get_cmap(ps.color_palette)
+        ps.cluster_colors = {
+            label: "#{:02x}{:02x}{:02x}".format(*(int(x * 255) for x in cmap(i / max(1, len(valid_labels) - 1))[:3]))
+            for i, label in enumerate(valid_labels)
+        }
 
-    
+    update_cluster_colors()
+
+    selected_point_indices = set()
+    new_cluster_mode = [False]
+
+    original_cluster_colors = ps.cluster_colors.copy()
+
     def get_color(cid):
         if cid == -1:
-            return '#999999'  # Dim gray for noise
+            return '#999999'
         return (
             manual_cluster_colors.get(cid)
             or ps.cluster_colors.get(cid)
             or original_cluster_colors.get(cid, '#cccccc')
         )
 
-
-
-    # Get the colormap and normalization
     cmap = cm.get_cmap(ps.color_palette)
     norm = ps.color_norm
-
-
-
-    # Extract relevant data
-    latent, dataset, feature_list, labels = (
-        ps.latent,
-        ps.dataset.normalised_elemental_data,
-        ps.dataset.feature_list,
-        ps.labels,
-    )
-
-    # Subsample if requested
-    if ratio_to_be_shown != 1.0:
-        sampled_indices = random.sample(range(latent.shape[0]), int(latent.shape[0] * ratio_to_be_shown))
-    else:
-        sampled_indices = list(range(latent.shape[0]))
-
+    latent = ps.latent
+    labels = ps.labels
+    sampled_indices = random.sample(range(latent.shape[0]), int(latent.shape[0] * ratio_to_be_shown)) if ratio_to_be_shown != 1.0 else list(range(latent.shape[0]))
     df = pd.DataFrame(latent[sampled_indices], columns=["x", "y"])
     df["cluster"] = labels.flatten()[sampled_indices]
     df["index"] = sampled_indices
 
-    # State tracking
     selected_clusters = set()
-    merged_clusters = defaultdict(list)
     out = Output()
-    new_ps = None  # Will hold the new PixelSegmenter if created
+    confirm_out = Output()
 
-    # Build initial figure widget
     fig = go.FigureWidget()
     fig.update_layout(
         title="Interactive Latent Space",
@@ -1679,82 +1675,43 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
         plot_bgcolor='white',
         height=600,
         width=600,
-        dragmode="select",  # Default to select
-        selectdirection="any"
+        dragmode="select"
     )
-    
-    fig.update_xaxes(
-    mirror=True,
-    ticks='outside',
-    showline=True,
-    linecolor='black',
-    gridcolor='lightgrey',
-    zerolinecolor='lightgrey'
-    )
-    fig.update_yaxes(
-    mirror=True,
-    ticks='outside',
-    showline=True,
-    linecolor='black',
-    gridcolor='lightgrey',
-    zerolinecolor='lightgrey'
-    )
+    fig.update_xaxes(mirror=True, ticks='outside', showline=True, linecolor='black', gridcolor='lightgrey', zerolinecolor='lightgrey')
+    fig.update_yaxes(mirror=True, ticks='outside', showline=True, linecolor='black', gridcolor='lightgrey', zerolinecolor='lightgrey')
 
-
-    # Helper to regenerate the plot with merged colors
     def plot():
         nonlocal df
-        # Refresh the DataFrame with updated labels
         current_labels = ps.labels.flatten()
         df = pd.DataFrame(latent[sampled_indices], columns=["x", "y"])
         df["cluster"] = current_labels[sampled_indices]
         df["index"] = sampled_indices
 
         with fig.batch_update():
-            fig.data = []  # Clear previous data
+            fig.data = []
 
-            # Remap clusters based on merged state
-            cluster_map = {}
-            for original_cluster in sorted(df['cluster'].unique()):
-                for group_id, originals in merged_clusters.items():
-                    if original_cluster in originals:
-                        cluster_map[original_cluster] = group_id
-                        break
-                else:
-                    cluster_map[original_cluster] = original_cluster
-
-            merged_ids = df['cluster'].map(cluster_map)
-            colors = merged_ids.map(lambda cid: manual_cluster_colors.get(cid, get_color(cid)))
-
+            colors = df["cluster"].map(lambda cid: manual_cluster_colors.get(cid, get_color(cid)))
             fig.add_trace(go.Scattergl(
-                x=df['x'],
-                y=df['y'],
-                mode='markers',
+                x=df["x"],
+                y=df["y"],
+                mode="markers",
                 marker=dict(size=6, color=colors),
-                name='Clusters',
-                customdata=np.stack([df['cluster'], df['index']], axis=1),
+                name="Clusters",
+                customdata=np.stack([df["cluster"], df["index"]], axis=1),
                 hovertemplate="Cluster: %{customdata[0]}<br>Index: %{customdata[1]}<extra></extra>"
             ))
 
             trace = fig.data[0]
             trace.on_click(on_point_click)
             trace.on_selection(on_select)
-            
-            
-    # Click handler
 
-            
     def on_point_click(trace, points, selector):
         for i in points.point_inds:
             cluster_id = int(trace.customdata[i][0])
-
-            # Skip noise
             if cluster_id == -1:
                 continue
-
             selected_clusters.add(cluster_id)
 
-            # Update color info display
             color_hex = get_color(cluster_id)
             r, g, b = tuple(int(color_hex[i:i+2], 16) for i in (1, 3, 5))
             rgb_str = f'rgb({r}, {g}, {b})'
@@ -1766,64 +1723,12 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
                 f"<b>HEX:</b> {color_hex}<br><b>RGB:</b> {rgb_str}"
                 f"</div>"
             )
-
         with out:
             print(f"Clicked cluster(s): {sorted(selected_clusters)}")
 
-
-    
-    #toggle switch to handle unassigned points when creating new cluster
-    include_noise_toggle = ToggleButtons(
-        options=["Include -1", "Exclude -1"],
-        description="Include/Exclude Noise:",
-        value="Exclude -1",
-        style={"button_width": "100px"}
-    )
-    
-    
-    
-    
-    standard_button_layout = Layout(width='150px', height='35px')
-
-    reset_button = Button(description="Reset", layout=standard_button_layout)
-    clear_selection_button = Button(description="Clear Selection", layout=standard_button_layout)
-    merge_button = Button(description="Merge Clusters", layout=standard_button_layout)
-    output_button = Button(description="Output Merged Clusters", layout=standard_button_layout)
-    recolor_button = Button(description="Recolour Selection", layout=standard_button_layout)
-    select_points_button = Button(description="Select Points", layout=standard_button_layout)
-    create_cluster_button = Button(description="Create Cluster", layout=standard_button_layout)
-    
-    color_info_box = HTML(
-    value="<b>No cluster selected</b>",
-    placeholder='Color Info',
-    description='',
-    layout=Layout(margin='10px 0px')
-)
-
-
-
-    #color picker widget
-    # Add a color picker widget
-    color_picker = ColorPicker(
-        concise=False,
-        description='Custom Color:',
-        value='#00ff00',
-        style={'description_width': 'initial'}
-    )
-
-    def on_color_pick(change):
-        selected_color[0] = change['new']
-        with out:
-            out.clear_output()
-            print(f"🎨 Selected custom color: {selected_color[0]}")
-
-    color_picker.observe(on_color_pick, names='value')
-
-    # Selection handler (lasso or rectangle)
     def on_select(trace, points, selector):
         if not points.point_inds:
             return
-
         if new_cluster_mode[0]:
             indices = [int(trace.customdata[i][1]) for i in points.point_inds]
             selected_point_indices.update(indices)
@@ -1834,7 +1739,7 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
             selected_clusters.update(selected)
             with out:
                 print(f"Lasso/Box selected clusters: {sorted(selected_clusters)}")
-     
+
     def on_select_points_clicked(b):
         selected_point_indices.clear()
         new_cluster_mode[0] = True
@@ -1854,8 +1759,7 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
         existing_clusters = set(current_labels)
         new_cluster_id = max(existing_clusters) + 1
 
-        count = 0  # Number of points reassigned
-
+        count = 0
         for idx in selected_point_indices:
             if include_noise_toggle.value == "Include -1" or current_labels[idx] != -1:
                 current_labels[idx] = new_cluster_id
@@ -1864,112 +1768,83 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
         if count == 0:
             with out:
                 out.clear_output()
-                print("⚠️ No eligible points updated (perhaps all were noise and excluded).")
+                print("⚠️ No eligible points updated.")
             return
 
         ps.labels = current_labels.reshape(ps.height * ps.width, 1)
         labels = ps.labels
         ps.n_components = len(set(labels.flatten()))
-
         selected_point_indices.clear()
         new_cluster_mode[0] = False
-
+        update_cluster_colors()
         compute_mu(ps)
-
         with out:
             out.clear_output()
             print(f"✅ Created new cluster {new_cluster_id} with {count} points.")
-
         plot()
-
-
-
-    
 
     def on_merge_clicked(b):
         if not selected_clusters:
             with out:
-                print("No clusters selected to merge.")
+                out.clear_output()
+                print("⚠️ No clusters selected to merge.")
             return
 
-        # Skip noise cluster (-1) from selection
         selected_clusters.difference_update([-1])
-
-        if not selected_clusters:  # If no clusters are left after excluding noise
+        if len(selected_clusters) <= 1:
             with out:
-                print("No valid clusters selected (all were noise clusters).")
+                out.clear_output()
+                print("⚠️ Need at least two clusters to merge.")
             return
 
-        resolved = set()
-        for cluster in selected_clusters:
-            for group_id, originals in merged_clusters.items():
-                if cluster in originals:
-                    resolved.add(group_id)
-                    break
-            else:
-                resolved.add(cluster)
+        target_id = min(selected_clusters)
+        label_array = ps.labels.flatten()
+        merge_count = 0
+        for cluster_id in selected_clusters:
+            if cluster_id != target_id:
+                merge_count += np.sum(label_array == cluster_id)
+                label_array[label_array == cluster_id] = target_id
 
-        if len(resolved) <= 1:
-            with out:
-                print("Nothing to merge (already in same group?).")
-            return
-
-        new_id = min(resolved)
-        new_group = set()
-        for group in resolved:
-            if group in merged_clusters:
-                new_group.update(merged_clusters.pop(group))
-            else:
-                new_group.add(group)
-        new_group.add(new_id)
-        merged_clusters[new_id] = list(sorted(new_group))
-
+        ps.labels = label_array.reshape(ps.height * ps.width, 1)
+        
+        used_labels = set(label_array)
+        ps.cluster_colors = {k: v for k, v in ps.cluster_colors.items() if k in used_labels}
+        update_cluster_colors()
+        
+        
+        ps.n_components = len(set(ps.labels.flatten()))
         selected_clusters.clear()
-        
+        update_cluster_colors()
         compute_mu(ps)
-        
-        
+
         with out:
             out.clear_output()
-            print(f"Merged clusters {sorted(resolved)} into cluster {new_id}")
+            print(f"✅ Merged clusters into cluster {target_id}.")
+            print(f"   Total points reassigned: {merge_count}")
         plot()
-
-
-
-
-
 
     def on_reset_clicked(b):
         confirm_out.clear_output()
-        
         with confirm_out:
             print("⚠️ Are you sure you want to reset everything?")
             confirm = Button(description="Yes, Reset", button_style='danger')
             cancel = Button(description="Cancel", button_style='info')
-            
+
             def do_reset(btn):
-                nonlocal new_ps, labels
-
+                nonlocal labels
                 selected_clusters.clear()
-                merged_clusters.clear()
                 manual_cluster_colors.clear()
-                new_ps = None
-
+                selected_point_indices.clear()
+                new_cluster_mode[0] = False
                 ps.color_palette = original_palette
-                ps.cluster_colors = original_cluster_colors.copy()
-
-                # Reset labels
                 ps.labels = original_labels.copy()
-                labels = ps.labels  # local reference
+                labels = ps.labels
                 ps.n_components = len(set(labels.flatten()))
-
-                fig.data = []
+                update_cluster_colors()
+                compute_mu(ps)
                 confirm_out.clear_output()
                 out.clear_output()
-                compute_mu(ps)
-
-                print("✅ Full reset complete. All cluster assignments and colors reverted.")
-
+                print("✅ Full reset complete.")
                 plot()
 
             def cancel_reset(btn):
@@ -1980,155 +1855,73 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5,n_colours=30):
 
             confirm.on_click(do_reset)
             cancel.on_click(cancel_reset)
-
             display(HBox([confirm, cancel]))
-
-
-
-    def on_output_clicked(b):
-        with out:
-            out.clear_output()
-            print("✅ To use the updated PixelSegmenter, call the function returned by interactive_latent_plot().")
-            
-                
-    # Color picker options (define however many you want)
-    # Build a color selector UI
-
-    # Generate colors from the colormap
-    color_buttons = []
-    num_colors = n_colours
-    cmap_colors = [cmap(i / (num_colors - 1)) for i in range(num_colors)]
-
-    selected_color = [None]  # use list for mutability in closure
-
-    def on_color_button_click(b):
-        selected_color[0] = b.tooltip  # stores the RGB string
-        with out:
-            print(f"Selected color: {selected_color[0]}")
-
-    for rgba in cmap_colors:
-        r, g, b_, _ = rgba
-        rgb_str = f'rgb({int(r*255)}, {int(g*255)}, {int(b_*255)})'
-        btn = Button(
-            layout=Layout(width='30px', height='30px'),
-            tooltip=rgb_str,
-            style={'button_color': rgb_str},
-        )
-        btn.on_click(on_color_button_click)
-        color_buttons.append(btn)
-
-    color_selector_ui = VBox([
-    HBox(color_buttons[:15]),
-    HBox(color_buttons[15:])
-    ])
-
-
 
     def on_recolor_clicked(b):
         if not selected_clusters or not selected_color[0]:
             with out:
                 print("Please select clusters and a color first.")
             return
-
         for cluster_id in selected_clusters:
             if cluster_id == -1:
-                continue  # Skip noise cluster (-1)
-            
-            # Recolor the valid clusters
+                continue
             manual_cluster_colors[cluster_id] = selected_color[0]
             ps.cluster_colors[cluster_id] = selected_color[0]
-            
-        selected_clusters.clear()  # Clear selection to avoid recoloring again
+        selected_clusters.clear()
         with out:
             out.clear_output()
             print("✅ Recolored selected clusters.")
         plot()
-        
-        
+
     def on_clear_selection_clicked(b):
         selected_clusters.clear()
         with out:
             out.clear_output()
             print("🧼 Cleared selected clusters.")
 
+    standard_button_layout = Layout(width='150px', height='35px')
+    recolor_button = Button(description="Recolour Selection", layout=standard_button_layout)
+    merge_button = Button(description="Merge Clusters", layout=standard_button_layout)
+    reset_button = Button(description="Reset", layout=standard_button_layout)
+    clear_selection_button = Button(description="Clear Selection", layout=standard_button_layout)
+    select_points_button = Button(description="Select Points", layout=standard_button_layout)
+    create_cluster_button = Button(description="Create Cluster", layout=standard_button_layout)
+    include_noise_toggle = ToggleButtons(options=["Include -1", "Exclude -1"], description="Include/Exclude Noise:", value="Exclude -1")
+    color_info_box = HTML(value="<b>No cluster selected</b>")
+    color_picker = ColorPicker(description='Custom Color:', value='#00ff00')
+    selected_color = [None]
 
-    
-    confirm_out = Output()
+    color_picker.observe(lambda c: selected_color.__setitem__(0, c['new']), names='value')
 
+    color_buttons = []
+    for rgba in [cmap(i / (n_colours - 1)) for i in range(n_colours)]:
+        r, g, b_, _ = rgba
+        rgb_str = f'rgb({int(r*255)}, {int(g*255)}, {int(b_*255)})'
+        btn = Button(layout=Layout(width='30px', height='30px'), tooltip=rgb_str, style={'button_color': rgb_str})
+        btn.on_click(lambda b, rgb=rgb_str: selected_color.__setitem__(0, rgb))
+        color_buttons.append(btn)
 
+    color_selector_ui = VBox([HBox(color_buttons[:15]), HBox(color_buttons[15:])])
 
-    # Bind buttons
     merge_button.on_click(on_merge_clicked)
     reset_button.on_click(on_reset_clicked)
-    output_button.on_click(on_output_clicked)
     recolor_button.on_click(on_recolor_clicked)
     select_points_button.on_click(on_select_points_clicked)
     create_cluster_button.on_click(on_create_cluster_clicked)
     clear_selection_button.on_click(on_clear_selection_clicked)
 
-
-    # Initial plot
     plot()
 
-    # Layout
-    top_row = HBox([
-        recolor_button,
-        merge_button,
-        output_button
-    ])
-
-    second_row = HBox([
-        select_points_button,
-        create_cluster_button
-    ])
-
-    third_row = HBox([
-        include_noise_toggle
-    ])
-
-    fourth_row = HBox([
-        clear_selection_button,
-        reset_button
-    ])
-
-    # Display the UI
     display(VBox([
-        top_row,
-        second_row,
-        third_row,
+        HBox([recolor_button, merge_button,select_points_button, create_cluster_button]),
+        HBox([include_noise_toggle]),
         color_info_box,
         color_selector_ui,
         color_picker,
         fig,
-        fourth_row,
+        HBox([clear_selection_button, reset_button]),
         confirm_out,
         out
     ]))
 
 
-
-    def get_new_ps():
-        current_labels = ps.labels.copy()
-        # Apply merged cluster mappings
-        if merged_clusters:
-            cluster_map = {}
-            for merged_id, originals in merged_clusters.items():
-                for original in originals:
-                    cluster_map[original] = merged_id
-            for i in range(len(current_labels)):
-                if current_labels[i] in cluster_map:
-                    current_labels[i] = cluster_map[current_labels[i]]
-
-        new_ps = PixelSegmenter(
-            dataset=ps.dataset,
-            latent=ps.latent
-        )
-        new_ps.labels = current_labels
-        new_ps.n_components = len(set(current_labels.flatten()))
-        new_ps.cluster_colors = ps.cluster_colors.copy()  # preserve recoloring
-        compute_mu(new_ps)
-        return new_ps
-
-    
-    # Return access function for new object
-    return lambda: get_new_ps
