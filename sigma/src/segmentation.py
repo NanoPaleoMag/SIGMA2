@@ -635,15 +635,23 @@ class PixelSegmenter(object):
 
         # --- Prob map or binary label mask ---
         if hasattr(self, "prob_map") and self.prob_map is not None and cluster_num < self.prob_map.shape[1]:
-            prob_map_i = self.prob_map[:, cluster_num]
-            title_prefix = "Pixel-wise probability"
+            try:
+                prob_map_i = np.asarray(self.prob_map[:, cluster_num], dtype=float)
+                title_prefix = "Pixel-wise probability"
+            except Exception as e:
+                raise ValueError(f"Invalid prob_map for cluster {cluster_num}: {e}")
         elif hasattr(self, "labels"):
             prob_map_i = (self.labels == cluster_num).astype(float)
-            if self.method == "HDBSCAN" and hasattr(self, "prob_map"):
-                prob_map_i *= self.prob_map
+            if self.method == "HDBSCAN" and hasattr(self, "prob_map") and self.prob_map is not None:
+                try:
+                    prob_map_vals = np.asarray(self.prob_map[:, cluster_num], dtype=float)
+                    prob_map_i *= prob_map_vals
+                except Exception as e:
+                    print(f"⚠️ Warning: Could not apply HDBSCAN prob_map to binary mask — {e}")
             title_prefix = "Binary label mask"
         else:
             raise ValueError(f"Cluster {cluster_num} could not be found in labels or prob_map")
+
 
         im = axs[0].imshow(prob_map_i.reshape(self.height, self.width), cmap="viridis")
         axs[0].set_title(f"{title_prefix} for cluster {cluster_num}")
