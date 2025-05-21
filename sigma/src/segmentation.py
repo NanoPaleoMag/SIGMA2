@@ -253,14 +253,28 @@ class PixelSegmenter(object):
 
     def get_all_spectra_profile(self, normalised=True):
         spectra_profiles = []
-        for i in range(self.n_components):
-            _, _, spectra_profile = self.get_binary_map_spectra_profile(
-                cluster_num=i, use_label=True
-            )
-            spectra_profiles.append(spectra_profile["intensity"])
+
+        # Use actual cluster labels that exist in self.labels
+        unique_clusters = np.unique(self.labels)
+        unique_clusters = unique_clusters[unique_clusters >= 0]  # skip outliers/noise
+
+        for cluster_id in unique_clusters:
+            try:
+                _, _, spectra_profile = self.get_binary_map_spectra_profile(
+                    cluster_num=cluster_id, use_label=True
+                )
+                spectra_profiles.append(spectra_profile["intensity"])
+            except Exception as e:
+                print(f"Skipping cluster {cluster_id} due to error: {e}")
+
+        if not spectra_profiles:
+            raise ValueError("No valid spectra profiles found for any cluster.")
+
         spectra_profiles = np.vstack(spectra_profiles)
-        if normalised == True:
+
+        if normalised:
             spectra_profiles *= 1 / spectra_profiles.max(axis=1, keepdims=True)
+
         return spectra_profiles
 
     def get_unmixed_spectra_profile(
@@ -271,6 +285,49 @@ class PixelSegmenter(object):
         method="NMF",
         method_args={},
     ):
+        
+
+        assert method == "NMF", "Only NMF is supported currently."
+
+        # Get all spectra profiles (shape: clusters x features)
+        spectra_profiles = self.get_all_spectra_profile(normalised)
+        cluster_ids = list(range(spectra_profiles.shape[0]))  # assumes rows are clusters
+
+        # Wrap into DataFrame with numeric cluster index
+        spectra_profiles_ = pd.DataFrame(
+            spectra_profiles.T,  # shape: features x clusters
+            columns=cluster_ids,
+        )
+
+        # Subset clusters to calculate
+        if clusters_to_be_calculated != "All":
+            spectra_profiles_ = spectra_profiles_[clusters_to_be_calculated]
+
+        # Determine number of NMF components
+        if n_components == "All":
+            n_components = spectra_profiles_.shape[1]
+
+        # Fit NMF
+        model = NMF(n_components=n_components, **method_args)
+        weights = model.fit_transform(spectra_profiles_.to_numpy().T)  # shape: clusters x components
+        components = model.components_  # shape: components x features
+
+        # Build DataFrames with clean, robust indexing
+        cluster_labels = [f"cluster_{i}" for i in spectra_profiles_.columns]
+        weights_df = pd.DataFrame(
+            weights.round(3),
+            columns=[f"w_{i}" for i in range(n_components)],
+            index=cluster_labels,
+        )
+        components_df = pd.DataFrame(
+            components.T.round(3),
+            columns=[f"cpnt_{i}" for i in range(n_components)],
+        )
+
+        self.NMF_recon_error = model.reconstruction_err_
+
+        return weights_df, components_df
+
 
         if clusters_to_be_calculated != "All":
             num_inputs = len(clusters_to_be_calculated)
