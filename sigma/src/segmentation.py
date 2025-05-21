@@ -275,7 +275,7 @@ class PixelSegmenter(object):
         if normalised:
             spectra_profiles *= 1 / spectra_profiles.max(axis=1, keepdims=True)
 
-        return spectra_profiles
+        return spectra_profiles, unique_clusters
 
     def get_unmixed_spectra_profile(
         self,
@@ -290,9 +290,9 @@ class PixelSegmenter(object):
         assert method == "NMF", "Only NMF is supported currently."
 
         # Get all spectra profiles (shape: clusters x features)
-        spectra_profiles = self.get_all_spectra_profile(normalised)
-        cluster_ids = list(range(spectra_profiles.shape[0]))  # assumes rows are clusters
-
+        spectra_profiles, cluster_ids = self.get_all_spectra_profile(normalised)
+        
+        
         # Wrap into DataFrame with numeric cluster index
         spectra_profiles_ = pd.DataFrame(
             spectra_profiles.T,  # shape: features x clusters

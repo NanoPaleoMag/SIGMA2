@@ -1068,20 +1068,23 @@ def show_unmixed_weights(weights: pd.DataFrame):
     def multi_select_cluster_eventhandler(change):
         plots_output.clear_output()
         with plots_output:
-            row_index = [cluster for cluster in change.new]
+            row_index = list(change.new)
             display(weights.loc[row_index])
-            for cluster in change.new:
-                num_cpnt = len(weights.columns.to_list())
+            for cluster in row_index:
+                num_cpnt = len(weights.columns)
                 fig, axs = plt.subplots(1, 1, figsize=(4, 3), dpi=96)
                 axs.bar(
-                    np.arange(0, num_cpnt),
-                    weights[weights.index == cluster].to_numpy().ravel(),
+                    np.arange(num_cpnt),
+                    weights.loc[cluster].values,
                     width=0.6,
                 )
-                axs.set_xticks(np.arange(0, num_cpnt))
-                axs.set_ylabel("weight of component")
-                axs.set_xlabel("component number")
+                axs.set_xticks(np.arange(num_cpnt))
+                axs.set_ylabel("Weight of component")
+                axs.set_xlabel("Component number")
+                axs.set_title(f"Weights for {cluster}")  # This adds clarity post-merge
                 plt.show()
+                save_fig(fig)
+
 
     multi_select_cluster.observe(multi_select_cluster_eventhandler, names="value")
 
