@@ -18,6 +18,8 @@ from skimage import measure
 from scipy import fftpack
 from skimage.transform import resize
 
+from matplotlib.colors import LinearSegmentedColormap
+
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
@@ -206,9 +208,7 @@ class PixelSegmenter(object):
                 binary_map = label_mask.reshape(self.height, self.width)
                 binary_map_indices = np.where(binary_map == 1)
         else:
-            binary_map = (
-                self.labels * np.where(self.labels == cluster_num, 1, 0)
-            ).reshape(self.height, self.width)
+            binary_map = (self.labels == cluster_num).astype(int).reshape(self.height, self.width)
             binary_map_indices = np.where(
                 self.labels.reshape(self.height, self.width) == cluster_num
             )
@@ -885,6 +885,9 @@ class PixelSegmenter(object):
     def plot_binary_map_spectra_profile(
         self, cluster_num, normalisation=True, spectra_range=(0, 8), **kwargs
     ):
+        # Extract color explicitly
+        color = kwargs.pop("color", None)
+
         binary_map, binary_map_indices, spectra_profile = self.get_binary_map_spectra_profile(
             cluster_num, use_label=True
         )
@@ -894,30 +897,47 @@ class PixelSegmenter(object):
         else:
             ncols, figsize, gridspec_kw = 2, (6, 3), None
 
+        # Only pass valid kwargs to plt.subplots
         fig, axs = plt.subplots(
             nrows=1,
             ncols=ncols,
             figsize=figsize,
             dpi=96,
-            gridspec_kw=gridspec_kw,
-            **kwargs,
+            gridspec_kw=gridspec_kw
         )
 
-        phase_color = plt.cm.get_cmap(self.color_palette)(
-            cluster_num / (self.n_components - 1)
-        )
         c = mcolors.ColorConverter().to_rgb
 
-        if (self.n_components > 10) and (cluster_num == 0):
-            cmap = make_colormap([c("k"), c("w"), 1, c("w")])
+        if color is not None:
+            phase_color = color  # 🎯 use passed-in color
         else:
-            cmap = make_colormap([c("k"), phase_color[:3], 1, phase_color[:3]])
+            phase_color = plt.cm.get_cmap(self.color_palette)(
+                cluster_num / (self.n_components - 1)
+            )
 
-        axs[0].imshow(binary_map, cmap=cmap)
+        if isinstance(phase_color, tuple) or isinstance(phase_color, list):
+            # phase_color is already RGB tuple/list, no need to convert
+            rgb_color = phase_color
+        else:
+            # phase_color is probably a string or something else
+            rgb_color = c(phase_color)
+            
+        if np.allclose(rgb_color, (0.0, 0.0, 0.0)):
+            rgb_color = (1.0, 1.0, 1.0)  # use white instead of black
+            
+        if any(v > 1 for v in rgb_color):
+            rgb_color = tuple(np.array(rgb_color) / 255)
+        cmap = make_colormap([(0.0, c("k")), (1.0, rgb_color)])
+        
+        if np.sum(binary_map) == 0:
+            print(f"⚠️ Cluster {cluster_num} binary map is empty.")
+
+        axs[0].imshow(binary_map, cmap=cmap, vmin=0, vmax=1)
         axs[0].set_title(f"Binary map (cluster {cluster_num})", fontsize=10)
         axs[0].axis("off")
         axs[0].set_aspect("equal", "box")
 
+        # Navigation image logic (unchanged)
         if type(self.dataset) not in [IMAGEDataset, PIXLDataset]:
             nav_img = self.dataset.nav_img_bin.data if self.dataset.nav_img_bin else self.dataset.nav_img.data
         else:
@@ -941,13 +961,14 @@ class PixelSegmenter(object):
 
             energy = spectra_profile["energy"].to_numpy()
 
-            color = (
+            # Use provided color if available
+            plot_color = color or (
                 plt.cm.get_cmap(self.color_palette)(cluster_num * 0.1)
                 if self.n_components <= 10
                 else plt.cm.get_cmap(self.color_palette)(cluster_num / (self.n_components - 1))
             )
 
-            axs[2].plot(energy, intensity, linewidth=1, color=color)
+            axs[2].plot(energy, intensity, linewidth=1, color=plot_color)
 
             # Plot peak lines
             for el in self.peak_list:

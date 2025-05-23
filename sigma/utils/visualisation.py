@@ -32,21 +32,31 @@ for element in hs.material.elements:
         peak_dict[key] = character[1].energy_keV
 
 
+import numpy as np
+from matplotlib.colors import LinearSegmentedColormap
+
 def make_colormap(seq):
-    """Return a LinearSegmentedColormap
-    seq: a sequence of floats and RGB-tuples. The floats should be increasing
-    and in the interval (0,1).
     """
-    seq = [(None,) * 3, 0.0] + list(seq) + [1.0, (None,) * 3]
-    cdict = {"red": [], "green": [], "blue": []}
-    for i, item in enumerate(seq):
-        if isinstance(item, float):
-            r1, g1, b1 = seq[i - 1]
-            r2, g2, b2 = seq[i + 1]
-            cdict["red"].append([item, r1, r2])
-            cdict["green"].append([item, g1, g2])
-            cdict["blue"].append([item, b1, b2])
-    return mcolors.LinearSegmentedColormap("CustomMap", cdict)
+    Create a LinearSegmentedColormap from a sequence of floats and RGB-tuples.
+    """
+    if not (isinstance(seq, list) and len(seq) >= 2):
+        raise ValueError("Expected a list with at least two (float, RGB) tuples.")
+
+    if seq[0][0] != 0.0 or seq[-1][0] != 1.0:
+        raise ValueError("Color map sequence must start with 0.0 and end with 1.0.")
+
+    def normalize_color(c):
+        # Accept 0–255 or 0–1 range
+        return tuple(np.array(c) / 255.0 if any(v > 1 for v in c) else c)
+
+    cdict = {'red': [], 'green': [], 'blue': []}
+    for x, color in seq:
+        r, g, b = normalize_color(color)
+        cdict['red'].append((x, r, r))
+        cdict['green'].append((x, g, g))
+        cdict['blue'].append((x, b, b))
+
+    return LinearSegmentedColormap('CustomMap', segmentdata=cdict)
 
 
 def plot_sum_spectrum(spectra, xray_lines=True):

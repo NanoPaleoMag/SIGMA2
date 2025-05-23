@@ -1199,6 +1199,8 @@ def show_unmixed_weights_and_compoments(
     display(tab)
 
 
+import matplotlib.colors as mcolors  # make sure this is imported
+
 def view_clusters_sum_spectra(ps: PixelSegmenter, normalisation=True, spectra_range=(0, 8)):
     # Get actual cluster IDs in current label map (excluding -1)
     current_labels = ps.labels
@@ -1214,6 +1216,16 @@ def view_clusters_sum_spectra(ps: PixelSegmenter, normalisation=True, spectra_ra
     profile_output = widgets.Output()
     figs = []
 
+    # Helper to get the color for a cluster
+    def get_cluster_color(cluster_id):
+        default_color = "#000000"
+        raw_color = ps.cluster_colors.get(cluster_id, default_color)
+        try:
+            return mcolors.to_rgb(raw_color)  # normalize to matplotlib RGB tuple
+        except ValueError:
+            # Fallback to parsing custom format
+            return parse_rgb_string(raw_color)
+
     # Initial display: if no selection, show all clusters
     with plots_output:
         for cluster_id in non_empty_clusters:
@@ -1222,6 +1234,7 @@ def view_clusters_sum_spectra(ps: PixelSegmenter, normalisation=True, spectra_ra
                     cluster_num=cluster_id,
                     normalisation=normalisation,
                     spectra_range=spectra_range,
+                    color=get_cluster_color(cluster_id)  # 🎨 use color
                 )
                 figs.append(fig)
             except ValueError:
@@ -1232,12 +1245,13 @@ def view_clusters_sum_spectra(ps: PixelSegmenter, normalisation=True, spectra_ra
             try:
                 _, _, spectra_profile = ps.get_binary_map_spectra_profile(
                     cluster_num=cluster_id,
-                    use_label=True,
+                    use_label=True
                 )
                 visual.plot_profile(
                     spectra_profile["energy"],
                     spectra_profile["intensity"],
                     ps.peak_list,
+                    color=get_cluster_color(cluster_id)  # 🎨 use color here too
                 )
             except ValueError:
                 print(f"No spectra to plot for cluster {cluster_id}")
@@ -1258,7 +1272,9 @@ def view_clusters_sum_spectra(ps: PixelSegmenter, normalisation=True, spectra_ra
                             cluster_num=cluster_id,
                             normalisation=normalisation,
                             spectra_range=spectra_range,
+                            color=get_cluster_color(cluster_id)
                         )
+                        figs.append(fig)
                     except ValueError:
                         print(f"Skipping empty cluster {cluster_id}")
             else:
@@ -1268,7 +1284,9 @@ def view_clusters_sum_spectra(ps: PixelSegmenter, normalisation=True, spectra_ra
                             cluster_num=cluster_id,
                             normalisation=normalisation,
                             spectra_range=spectra_range,
+                            color=get_cluster_color(cluster_id)
                         )
+                        figs.append(fig)
                     except ValueError:
                         print(f"Skipping empty cluster {cluster_id}")
 
@@ -1283,6 +1301,7 @@ def view_clusters_sum_spectra(ps: PixelSegmenter, normalisation=True, spectra_ra
                             spectra_profile["energy"],
                             spectra_profile["intensity"],
                             ps.peak_list,
+                            color=get_cluster_color(cluster_id)
                         )
                     except ValueError:
                         print(f"No spectra to plot for cluster {cluster_id}")
@@ -1296,6 +1315,7 @@ def view_clusters_sum_spectra(ps: PixelSegmenter, normalisation=True, spectra_ra
                             spectra_profile["energy"],
                             spectra_profile["intensity"],
                             ps.peak_list,
+                            color=get_cluster_color(cluster_id)
                         )
                     except ValueError:
                         print(f"No spectra to plot for cluster {cluster_id}")
