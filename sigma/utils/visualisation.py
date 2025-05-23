@@ -32,32 +32,67 @@ for element in hs.material.elements:
         peak_dict[key] = character[1].energy_keV
 
 
-import numpy as np
 from matplotlib.colors import LinearSegmentedColormap
+import numpy as np
+
+
 
 def make_colormap(seq):
     """
-    Create a LinearSegmentedColormap from a sequence of floats and RGB-tuples.
+    Accepts:
+    - [(float, color), ...]
+    - [color1, color2, float, color3, float, color4, ...]
+      (legacy: implicit 0.0 for first color, then float, color pairs)
     """
-    if not (isinstance(seq, list) and len(seq) >= 2):
-        raise ValueError("Expected a list with at least two (float, RGB) tuples.")
-
-    if seq[0][0] != 0.0 or seq[-1][0] != 1.0:
-        raise ValueError("Color map sequence must start with 0.0 and end with 1.0.")
 
     def normalize_color(c):
-        # Accept 0–255 or 0–1 range
-        return tuple(np.array(c) / 255.0 if any(v > 1 for v in c) else c)
+        arr = np.array(c)
+        return tuple(arr / 255.0 if np.any(arr > 1) else arr)
+
+    formatted_seq = []
+
+    # Case 1: explicit format
+    if all(isinstance(x, tuple) and isinstance(x[0], float) for x in seq):
+        formatted_seq = sorted(seq, key=lambda x: x[0])
+    else:
+        try:
+            i = 0
+            if isinstance(seq[0], (tuple, list, np.ndarray)) and isinstance(seq[1], (tuple, list, np.ndarray)):
+                # Legacy case: [color1, color2, float, color3, float, color4, ...]
+                formatted_seq.append((0.0, normalize_color(seq[0])))
+                i = 1
+                while i < len(seq) - 1:
+                    if isinstance(seq[i], (tuple, list, np.ndarray)) and isinstance(seq[i+1], (int, float)):
+                        pos = float(seq[i+1])
+                        color = normalize_color(seq[i])
+                        formatted_seq.append((pos, color))
+                        i += 2
+                    else:
+                        raise ValueError(f"Expected (color, float) at position {i}, got: {type(seq[i])}, {type(seq[i+1])}")
+                # Final color with no position is assumed at 1.0
+                if i == len(seq) - 1 and isinstance(seq[i], (tuple, list, np.ndarray)):
+                    formatted_seq.append((1.0, normalize_color(seq[i])))
+            else:
+                raise ValueError("Unsupported sequence format.")
+        except Exception as e:
+            raise ValueError(
+                f"Could not parse colormap sequence. Expected [(float, color), ...] or legacy [color, color, float, color, ...]. Got: {seq}"
+            ) from e
+
+    # Ensure start and end
+    if formatted_seq[0][0] != 0.0:
+        formatted_seq.insert(0, (0.0, formatted_seq[0][1]))
+    if formatted_seq[-1][0] != 1.0:
+        formatted_seq.append((1.0, formatted_seq[-1][1]))
 
     cdict = {'red': [], 'green': [], 'blue': []}
-    for x, color in seq:
+    for pos, color in formatted_seq:
         r, g, b = normalize_color(color)
-        cdict['red'].append((x, r, r))
-        cdict['green'].append((x, g, g))
-        cdict['blue'].append((x, b, b))
+        cdict['red'].append((pos, r, r))
+        cdict['green'].append((pos, g, g))
+        cdict['blue'].append((pos, b, b))
 
-    return LinearSegmentedColormap('CustomMap', segmentdata=cdict)
-
+    return LinearSegmentedColormap("CustomMap", segmentdata=cdict)
 
 def plot_sum_spectrum(spectra, xray_lines=True):
     size = spectra.axes_manager[2].size
@@ -258,11 +293,19 @@ def plot_pixel_distributions(
     return fig
 
 
-def plot_profile(energy, intensity, peak_list):
+def plot_profile(energy, intensity, peak_list, color=None):
     if type(intensity) is pd.core.series.Series:
         intensity = intensity.to_list()
+    
+    # Use specified color if given, else default to Plotly automatic
+    trace = go.Scatter(
+        x=energy,
+        y=intensity,
+        line=dict(color=f"rgb({int(color[0]*255)}, {int(color[1]*255)}, {int(color[2]*255)})") if color else None
+    )
+
     fig = go.Figure(
-        data=go.Scatter(x=energy, y=intensity),
+        data=trace,
         layout_xaxis_range=[0, 8],
         layout=go.Layout(
             title="",
@@ -273,7 +316,9 @@ def plot_profile(energy, intensity, peak_list):
             height=500,
         ),
     )
+
     zero_energy_idx = np.where(np.array(energy).round(2) == 0)[0][0]
+    
     for el in peak_list:
         peak = intensity[zero_energy_idx:][int(peak_dict[el] * 100) + 1]
         fig.add_shape(
@@ -284,7 +329,6 @@ def plot_profile(energy, intensity, peak_list):
             y1=0.9 * peak,
             line=dict(color="black", width=2, dash="dot"),
         )
-
         fig.add_annotation(
             x=peak_dict[el],
             y=peak,
@@ -294,8 +338,7 @@ def plot_profile(energy, intensity, peak_list):
             yshift=30,
             textangle=270,
         )
+
     fig.update_layout(showlegend=False)
     fig.update_layout(template="simple_white")
     fig.show()
-
-

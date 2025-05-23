@@ -850,12 +850,22 @@ def check_latent_space(ps: PixelSegmenter, ratio_to_be_shown=0.25, show_map=Fals
 def show_cluster_distribution(ps: PixelSegmenter, **kwargs):
     from IPython.display import display
     import ipywidgets as widgets
+    import matplotlib.colors as mcolors
 
     # Utility: Get current non-empty cluster labels
     def get_current_clusters():
         current_labels = ps.labels
         unique_labels = sorted(set(current_labels.flatten()))
         return [c for c in unique_labels if c >= 0 and np.sum(current_labels == c) > 0]
+
+    # Utility: Get RGB color for a cluster
+    def get_cluster_color(cluster_id):
+        default_color = "#000000"
+        raw_color = ps.cluster_colors.get(cluster_id, default_color)
+        try:
+            return mcolors.to_rgb(raw_color)
+        except ValueError:
+            return parse_rgb_string(raw_color)
 
     # Recompute stats (mu, label shape etc.)
     refresh_cluster_statistics(ps)
@@ -904,7 +914,11 @@ def show_cluster_distribution(ps: PixelSegmenter, **kwargs):
         with plots_output:
             for i in cluster_indices:
                 try:
-                    fig = ps.plot_single_cluster_distribution(cluster_num=i, **kwargs)
+                    fig = ps.plot_single_cluster_distribution(
+                        cluster_num=i,
+                        color=get_cluster_color(i),  # 🎨 pass color here
+                        **kwargs
+                    )
                     all_figs.append(fig)
                 except Exception as e:
                     print(f"Skipping cluster {i} due to error: {e}")

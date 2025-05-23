@@ -681,7 +681,7 @@ class PixelSegmenter(object):
         if save is not None:
             fig.savefig(save, bbox_inches="tight", pad_inches=0.01)
 
-    def plot_single_cluster_distribution(self, cluster_num, spectra_range=(0, 8)):
+    def plot_single_cluster_distribution(self, cluster_num, spectra_range=(0, 8), color=None):
         ncols, figsize = 3, (13, 2.5)
         fig, axs = plt.subplots(nrows=1, ncols=ncols, figsize=figsize, dpi=120)
         fig.subplots_adjust(hspace=0.35, wspace=0.1)
@@ -709,7 +709,6 @@ class PixelSegmenter(object):
         else:
             raise ValueError(f"Cluster {cluster_num} could not be found in labels or prob_map")
 
-
         im = axs[0].imshow(prob_map_i.reshape(self.height, self.width), cmap="viridis")
         axs[0].set_title(f"{title_prefix} for cluster {cluster_num}")
         axs[0].axis("off")
@@ -718,30 +717,23 @@ class PixelSegmenter(object):
         cbar.ax.tick_params(labelsize=10, size=0)
 
         # --- Mean feature bar plot ---
-
         mu_values = None
-        # 1) dict case
         if isinstance(getattr(self, "mu", None), dict):
             if cluster_num in self.mu:
                 mu_values = self.mu[cluster_num]
-        # 2) array case
         elif hasattr(self, "mu") and hasattr(self.mu, "__len__"):
             if 0 <= cluster_num < len(self.mu):
                 mu_values = self.mu[cluster_num]
 
         if mu_values is not None:
-            # proceed with plotting bar chart using mu_values
-            if self.n_components <= 10:
-                color = plt.cm.get_cmap(self.color_palette)(cluster_num * 0.1)
-            else:
-                color = plt.cm.get_cmap(self.color_palette)(
-                    cluster_num * (self.n_components - 1) ** -1
-                )
+            plot_color = (
+                color if color is not None else
+                plt.cm.get_cmap(self.color_palette)(cluster_num * 0.1 if self.n_components <= 10 else cluster_num * (self.n_components - 1) ** -1)
+            )
 
-            axs[1].bar(self.dataset.feature_list, mu_values, width=0.6, color=color)
+            axs[1].bar(self.dataset.feature_list, mu_values, width=0.6, color=plot_color)
             for i, feat in enumerate(self.dataset.feature_list):
-                y = mu_values[i] + mu_values.max() * 0.03 \
-                    if mu_values[i] > 0 else mu_values[i] - mu_values.max() * 0.08
+                y = mu_values[i] + mu_values.max() * 0.03 if mu_values[i] > 0 else mu_values[i] - mu_values.max() * 0.08
                 axs[1].text(i - len(feat) * 0.11, y, feat, fontsize=8)
 
             axs[1].set_xticks([])
@@ -755,7 +747,6 @@ class PixelSegmenter(object):
                 axs[1].set_ylim(None, mu_values.max() * 1.2)
             axs[1].set_title(f"Mean feature value for cluster {cluster_num}")
         else:
-            # no mu available for this cluster
             axs[1].text(0.5, 0.5, f"No `mu` for cluster {cluster_num}", ha="center")
             axs[1].set_axis_off()
 
@@ -772,12 +763,8 @@ class PixelSegmenter(object):
                            edgecolor=sns.color_palette()[0], linestyle="dotted", linewidth=1,
                            zorder=10, label="Avg. raw spectrum")
 
-                if self.n_components <= 10:
-                    color = plt.cm.get_cmap(self.color_palette)(cluster_num * 0.1)
-                else:
-                    color = plt.cm.get_cmap(self.color_palette)(cluster_num * (self.n_components - 1) ** -1)
-
-                axs[2].bar(self.dataset.feature_list, mean_intensity, width=0.6, linewidth=1, color=color)
+                axs[2].bar(self.dataset.feature_list, mean_intensity, width=0.6, linewidth=1,
+                           color=plot_color)
 
                 for i in range(len(self.dataset.feature_list)):
                     y = mean_intensity[i] + mean_intensity.max() * 0.03
@@ -800,12 +787,7 @@ class PixelSegmenter(object):
                             linestyle="dotted", color=sns.color_palette()[0],
                             label="Normalised sum spectrum")
 
-                if self.n_components <= 10:
-                    color = plt.cm.get_cmap(self.color_palette)(cluster_num * 0.1)
-                else:
-                    color = plt.cm.get_cmap(self.color_palette)(cluster_num * (self.n_components - 1) ** -1)
-
-                axs[2].plot(spectra_profile["energy"], intensity, linewidth=1, color=color)
+                axs[2].plot(spectra_profile["energy"], intensity, linewidth=1, color=plot_color)
 
                 axs[2].set_xticks(np.arange(0, 12, step=1))
                 axs[2].set_yticks(np.arange(0, 1.1, step=0.2))
@@ -817,21 +799,26 @@ class PixelSegmenter(object):
                 axs[2].set_ylabel("Intensity / a.u.", fontsize=10)
                 axs[2].legend(loc="upper right", handletextpad=0.5, frameon=False, prop={"size": 7})
 
-                # Optional peak annotations
-                if np.array(spectra_profile["energy"]).min() <= 0:
-                    zero_energy_idx = np.where(np.array(spectra_profile["energy"]).round(2) == 0)[0][0]
-                else:
+                # Peak annotation with fallback
+                energy_array = np.array(spectra_profile["energy"])
+                try:
+                    zero_energy_idx = np.where(energy_array.round(2) == 0)[0][0]
+                except IndexError:
                     zero_energy_idx = 0
+                    print("⚠️ Warning: No exact 0.00 keV found in energy axis. Using index 0 for peak lookup.")
 
                 for el in self.dataset.feature_list:
-                    peak_sum = intensity_sum[zero_energy_idx:][int(self.peak_dict[el] * 100) + 1]
-                    peak_single = intensity[zero_energy_idx:][int(self.peak_dict[el] * 100) + 1]
-                    peak = max(peak_sum, peak_single)
-
-                    axs[2].vlines(self.peak_dict[el], 0, 0.9 * peak, linewidth=0.7,
-                                  color="grey", linestyles="dashed")
-                    axs[2].text(self.peak_dict[el] - 0.1, peak + (intensity.max() / 20),
-                                el, rotation="vertical", fontsize=7.5)
+                    idx_offset = int(self.peak_dict[el] * 100) + 1
+                    try:
+                        peak_sum = intensity_sum[zero_energy_idx:][idx_offset]
+                        peak_single = intensity[zero_energy_idx:][idx_offset]
+                        peak = max(peak_sum, peak_single)
+                        axs[2].vlines(self.peak_dict[el], 0, 0.9 * peak, linewidth=0.7,
+                                      color="grey", linestyles="dashed")
+                        axs[2].text(self.peak_dict[el] - 0.1, peak + (intensity.max() / 20),
+                                    el, rotation="vertical", fontsize=7.5)
+                    except IndexError:
+                        print(f"⚠️ Skipping peak {el}: index {idx_offset} out of range for cluster {cluster_num}")
 
         except Exception as e:
             axs[2].text(0.5, 0.5, f"Error in spectra plot:\n{str(e)}", ha="center")
