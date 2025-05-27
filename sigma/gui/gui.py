@@ -727,7 +727,9 @@ def check_latent_space(ps: PixelSegmenter, ratio_to_be_shown=0.25, show_map=Fals
         sampled_combined = np.array(sampled_combined)
     else:
         sampled_combined = combined
-
+    
+    
+    
     source = pd.DataFrame(
         sampled_combined,
         columns=["x_id", "y_id", "z_id", "x", "y"] + feature_list + ["Cluster_id"],

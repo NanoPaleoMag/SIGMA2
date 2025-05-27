@@ -13,6 +13,8 @@ from .base import BaseDataset
 
 import copy
 
+
+
 class SEMDataset(BaseDataset):
     def __init__(self, file_path: Union[str, Path], nag_file_path: Union[str, Path]=None):
         super().__init__(file_path)
@@ -53,20 +55,33 @@ class SEMDataset(BaseDataset):
             #setting up the units as the rpl file has none
             self.base_dataset.axes_manager[2].name='Energy'
             self.base_dataset.axes_manager[2].units='keV'
+            self.base_dataset.axes_manager[0].name='width'
+            self.base_dataset.axes_manager[1].name='height'
             
             self.base_dataset.set_signal_type('EDS_SEM')
             
-            self.base_dataset.axes_manager[2].scale=20/2048 ### WILL NEED TO CHANGE THIS LINE ONCE THE PAR FILES ARE AVAILABLE
+            if not isfile(file_path[:-4]+'.par'):
+                print("could not find .par file - no scaling applied to spatial axis, and assuming scale of 20kV/2048 channels in spectra axis")
+                self.base_dataset.axes_manager[2].scale=20/2048
+            else:
+                print('reading parameters from '+file_path[:-4]+'.par')
+                params=read_par(file_path[:-4]+'.par')
+                self.base_dataset.axes_manager[2].scale=params['scale_spectral']
+                self.base_dataset.axes_manager[0].scale=params['scale_x']
+                self.base_dataset.axes_manager[1].scale=params['scale_y']
+                
+                self.base_dataset.axes_manager[0].units='μm'
+                self.base_dataset.axes_manager[1].units='μm'
+                
             
-            nav_img = Signal2D(self.base_dataset.sum(axis=2).data).T
+            nav_img = self.base_dataset.sum(axis=2)
             
             self.original_nav_img = nav_img
             self.nav_img = nav_img
             self.original_spectra = self.base_dataset
             self.spectra = self.base_dataset
             
-            #need to add way to calibrate with the EDS.par file 
-            #but first need to obtain the EDS.par files...
+            
         
         
         self.spectra.change_dtype("float32")  # change spectra data from unit8 into float32
@@ -206,7 +221,7 @@ class AZTECDataset(object):
         self.spectra_raw = copy.deepcopy(self.spectra_bin)
         return (self.spectra_bin, self.nav_img_bin)
 
-    def remove_fist_peak(self, end: float):
+    def remove_first_peak(self, end: float):
         """
         Removes the zero energy peak from the spectrum, by removing cropping the signal axis so that it begins at an energy defined by the user
         
@@ -220,7 +235,7 @@ class AZTECDataset(object):
         """
         
         print(
-            f"Removing the fisrt peak by setting the intensity to zero until the energy of {end} keV."
+            f"Removing the first peak by setting the intensity to zero until the energy of {end} keV."
         )
         for spectra in (self.spectra, self.spectra_bin):
             if spectra is None:
@@ -440,4 +455,89 @@ def load_AZTEC(input_file,y_dim=1024):
     aztec_data.spectra=s.data
     return aztec_data
     
+    
+import re
+
+def parse_length(line):
+    """Extract a length value and convert to microns (μm)."""
+    # Convert units to microns (μm)
+    unit_factors_to_um = {
+        'km': 1e9,       # 1 km = 1e9 μm
+        'm': 1e6,
+        'cm': 1e4,
+        'mm': 1e3,
+        'μm': 1.0,
+        'um': 1.0,       # ASCII version of μm
+        'nm': 1e-3,
+        'pm': 1e-6,
+    }
+    match = re.search(r"([\d\.]+)\s*(km|m|cm|mm|μm|um|nm|pm)", line)
+    
+    if match:
+        value = float(match.group(1))
+        unit = match.group(2)
+        return value * unit_factors_to_um[unit]
+    return None
+        
+def read_par(filepath):
+    """
+    Helper function to read a .par file and extract spatial and spectral scale parameters.
+
+    Parameters
+    ----------
+    filepath : str
+        Path to the .par file.
+    
+    Returns
+    -------
+    params : dict
+        Dictionary of the form:
+        {
+            'scale_x': float,  # microns per pixel
+            'scale_y': float,  # microns per pixel
+            'scale_spectral': float,  # keV per channel
+        }
+    """
+    params = {}
+    width_um = height_um = None
+    width_px = height_px = None
+    energy_range = num_channels = None
+
+
+
+
+
+    with open(filepath, 'r', encoding='utf-8') as f:
+        for line in f:
+            if "Map Width" in line:
+                width_um = parse_length(line)
+            elif "Map Height" in line:
+                height_um = parse_length(line)
+            elif "Resolution (Width)" in line:
+                match = re.search(r"(\d+)\s*pixels", line)
+                if match:
+                    width_px = int(match.group(1))
+            elif "Resolution (Height)" in line:
+                match = re.search(r"(\d+)\s*pixels", line)
+                if match:
+                    height_px = int(match.group(1))
+            elif "Energy Range" in line:
+                match = re.search(r"([\d\.]+)\s*keV", line)
+                if match:
+                    energy_range = float(match.group(1))
+            elif "Number of Channels" in line:
+                match = re.search(r"(\d+)", line)
+                if match:
+                    num_channels = int(match.group(1))
+
+    # Compute scales
+    try:
+        params['scale_x'] = width_um / width_px
+        params['scale_y'] = height_um / height_px
+        params['scale_spectral'] = energy_range / num_channels
+    except TypeError:
+        raise ValueError("Missing or invalid parameters in the file.")
+
+    return params
+
 
