@@ -71,7 +71,7 @@ class BaseDataset(object):
         self.spectra_raw = self.spectra_bin.deepcopy()
         return (self.spectra_bin, self.nav_img_bin)
 
-    def remove_fist_peak(self, end: float):
+    def remove_first_peak(self, end: float):
         """
         Removes the zero energy peak from the spectrum, by removing cropping the signal axis so that it begins at an energy defined by the user
         
@@ -85,7 +85,7 @@ class BaseDataset(object):
         """
         
         print(
-            f"Removing the fisrt peak by setting the intensity to zero until the energy of {end} keV."
+            f"Removing the first peak by setting the intensity to zero until the energy of {end} keV."
         )
         for spectra in (self.spectra, self.spectra_bin):
             if spectra is None:
