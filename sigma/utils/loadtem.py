@@ -18,7 +18,28 @@ class TEMDataset(BaseDataset):
             
             if type(self.base_dataset) == Signal1D:
                 self.spectra = hs.load(file_path, signal_type="EDS_TEM")
-                self.nav_img = Signal2D(self.spectra.data.sum(axis=2))
+                self.nav_img = Signal2D(self.spectra.data.sum(axis=2)).transpose()
+                
+                #setting axis attributes
+                
+                self.nav_img.axes_manager[0].name=self.base_dataset.axes_manager[0].name
+                self.nav_img.axes_manager[1].name=self.base_dataset.axes_manager[1].name
+                
+                self.nav_img.axes_manager[0].offset=self.base_dataset.axes_manager[0].offset
+                self.nav_img.axes_manager[1].offset=self.base_dataset.axes_manager[1].offset
+                
+                self.nav_img.axes_manager[0].scale=self.base_dataset.axes_manager[0].scale
+                self.nav_img.axes_manager[1].scale=self.base_dataset.axes_manager[1].scale
+
+                self.nav_img.axes_manager[0].units=self.base_dataset.axes_manager[0].units
+                self.nav_img.axes_manager[1].units=self.base_dataset.axes_manager[1].units                
+               
+                
+
+                
+                
+                
+                
                 self.spectra.change_dtype("float32")
                 self.spectra_raw = self.spectra.deepcopy()
 
