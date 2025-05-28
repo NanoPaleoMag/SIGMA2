@@ -1778,10 +1778,14 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5, n_colours=30):
     def update_cluster_colors():
         valid_labels = sorted(set(ps.labels.flatten()) - {-1})
         cmap = cm.get_cmap(ps.color_palette)
-        ps.cluster_colors = {
-            label: "#{:02x}{:02x}{:02x}".format(*(int(x * 255) for x in cmap(i / max(1, len(valid_labels) - 1))[:3]))
-            for i, label in enumerate(valid_labels)
-        }
+
+        # Only assign new colors to clusters that do not already have a manually assigned one
+        for i, label in enumerate(valid_labels):
+            if label not in manual_cluster_colors:
+                color = "#{:02x}{:02x}{:02x}".format(*(int(x * 255) for x in cmap(i / max(1, len(valid_labels) - 1))[:3]))
+                ps.cluster_colors[label] = color
+            else:
+                ps.cluster_colors[label] = manual_cluster_colors[label]
 
     update_cluster_colors()
 
@@ -2007,11 +2011,13 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5, n_colours=30):
             with out:
                 print("Please select clusters and a color first.")
             return
+
         for cluster_id in selected_clusters:
             if cluster_id == -1:
                 continue
-            manual_cluster_colors[cluster_id] = selected_color[0]
+            manual_cluster_colors[cluster_id] = selected_color[0]  # persist manual color
             ps.cluster_colors[cluster_id] = selected_color[0]
+
         selected_clusters.clear()
         with out:
             out.clear_output()
