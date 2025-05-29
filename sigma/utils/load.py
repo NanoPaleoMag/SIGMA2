@@ -10,6 +10,7 @@ from skimage.transform import resize
 from hyperspy._signals.eds_sem import EDSSEMSpectrum
 from hyperspy._signals.signal2d import Signal2D
 from .base import BaseDataset
+from scipy.signal import find_peaks
 
 import copy
 
@@ -95,6 +96,72 @@ class SEMDataset(BaseDataset):
             print('Unable to read X-Ray lines from sample metadata, setting blank list')
             self.spectra.metadata.set_item('Sample.xray_lines',[])
             
+    def calibrate_spectra(self, measured_peaks_dict=None, tolerance=0.2):
+        """
+        Calibrate EDS spectrum using either:
+        - measured_peaks_dict: dict of {line_label: measured_energy}, e.g., {'O_Ka': 0.703, 'Fe_Ka': 6.45}
+        - OR fallback automatic matching
+        
+        The reference energies are looked up from a predefined dictionary of known lines.
+        """
+
+        # Reference line database (expand as needed)
+        reference_library = {
+            'C_Ka': 0.277,
+            'N_Ka': 0.392,
+            'O_Ka': 0.525,
+            'F_Ka': 0.677,
+            'Na_Ka': 1.041,
+            'Mg_Ka': 1.253,
+            'Al_Ka': 1.486,
+            'Si_Ka': 1.740,
+            'P_Ka': 2.013,
+            'S_Ka': 2.308,
+            'Cl_Ka': 2.622,
+            'K_Ka': 3.312,
+            'Ca_Ka': 3.690,
+            'Ti_Ka': 4.510,
+            'Mn_Ka': 5.895,
+            'Fe_Ka': 6.404,
+            'Co_Ka': 6.930,
+            'Ni_Ka': 7.470,
+            'Cu_Ka': 8.040,
+            'Zn_Ka': 8.640,
+        }
+
+        if measured_peaks_dict is not None:
+            matched_measured = []
+            matched_reference = []
+            for line, measured_energy in measured_peaks_dict.items():
+                if line not in reference_library:
+                    raise ValueError(f"Unknown line label '{line}'. Please check or update the reference database.")
+                ref_energy = reference_library[line]
+                print(f"[Manual] Using {line}: Measured={measured_energy:.3f} keV → Reference={ref_energy:.3f} keV")
+                matched_measured.append(measured_energy)
+                matched_reference.append(ref_energy)
+
+            matched_measured = np.array(matched_measured)
+            matched_reference = np.array(matched_reference)
+        else:
+            # fallback: automatic detection and matching
+            energy = self.spectra.axes_manager[2].axis
+            counts = self.spectra.sum().data
+            peaks_idx, _ = find_peaks(counts, height=0.05 * np.max(counts), distance=5)
+            measured_peaks = energy[peaks_idx]
+
+            reference_lines = np.array(list(reference_library.values()))
+            matched_measured, matched_reference = match_peaks(measured_peaks, reference_lines, tolerance=tolerance)
+
+        # Check sufficient data
+        if len(matched_measured) < 2:
+            raise ValueError("Not enough matched peaks for calibration.")
+
+        # Fit and apply correction
+        a, b = np.polyfit(matched_measured, matched_reference, 1)
+        print(f"Calibration correction: E_corrected = {a:.6f} * E_measured + {b:.6f}")
+        self.spectra.axes_manager[2].scale *= a
+        self.spectra.axes_manager[2].offset = self.spectra.axes_manager[2].offset * a + b
+        print("Calibration successful.")
 
 class IMAGEDataset(object):
     def __init__(self, 
@@ -539,5 +606,43 @@ def read_par(filepath):
         raise ValueError("Missing or invalid parameters in the file.")
 
     return params
+    
 
 
+
+from scipy.optimize import linear_sum_assignment
+
+
+def match_peaks(measured, reference, tolerance=0.2):
+    # Full cost matrix
+    cost_matrix = np.abs(measured[:, np.newaxis] - reference[np.newaxis, :])
+
+    # Mask elements beyond the tolerance
+    valid_mask = cost_matrix <= tolerance
+
+    # Identify valid measured and reference indices (with at least one match)
+    valid_measured_idx = np.any(valid_mask, axis=1)
+    valid_reference_idx = np.any(valid_mask, axis=0)
+
+    # If not enough peaks, exit early
+    if np.sum(valid_measured_idx) < 2 or np.sum(valid_reference_idx) < 2:
+        raise ValueError("Not enough close matches within tolerance to calibrate.")
+
+    # Filter down cost matrix and values
+    reduced_cost_matrix = cost_matrix[np.ix_(valid_measured_idx, valid_reference_idx)]
+
+    # Set inf where outside tolerance (still needed to avoid bad matches)
+    reduced_cost_matrix[reduced_cost_matrix > tolerance] = np.inf
+
+    # Now apply linear_sum_assignment
+    row_ind, col_ind = linear_sum_assignment(reduced_cost_matrix)
+
+    # Filter out invalid matches (still needed if infs remain)
+    matched_costs = reduced_cost_matrix[row_ind, col_ind]
+    valid = matched_costs < np.inf
+
+    # Recover original indices
+    matched_measured = measured[valid_measured_idx][row_ind[valid]]
+    matched_reference = reference[valid_reference_idx][col_ind[valid]]
+
+    return matched_measured, matched_reference
