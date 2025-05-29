@@ -11,7 +11,14 @@ conda create -n sigma2 python=3.10
 conda activate sigma2
 ```
 
-2. Install the requirements from the `requirements.txt` file using [**pip**](https://pypi.org/project/pip/):
+2. Clone this repository into a directory on your machine, either by downloading and extracting the `.zip` file, or with:
+```bash
+git clone https://github.com/NanoPaleoMag/SIGMA2.git
+```   
+
+3. Navigate to the `SIGMA2` directory on your machine in your `conda` terminal
+  
+4. Install the requirements from the `requirements.txt` file using [**pip**](https://pypi.org/project/pip/):
 ```bash
 pip install -r requirements.txt
 ```
