@@ -525,7 +525,7 @@ def read_par(filepath):
                 match = re.search(r"([\d\.]+)\s*keV", line)
                 if match:
                     energy_range = float(match.group(1))
-            elif "Number of Channels" in line:
+            elif "Number Of Channels" in line:
                 match = re.search(r"(\d+)", line)
                 if match:
                     num_channels = int(match.group(1))
