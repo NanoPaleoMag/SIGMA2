@@ -11,7 +11,7 @@ from sigma.utils.loadtem import TEMDataset
 from sigma.src.utils import k_factors_120kV
 from sigma.utils import normalisation as norm
 
-
+from sklearn.preprocessing import RobustScaler
 import os
 import random
 import numpy as np
@@ -691,12 +691,17 @@ def check_latent_space(ps: PixelSegmenter, ratio_to_be_shown=0.25, show_map=Fals
             range_.append(hex_color)
 
 
-    latent, dataset, feature_list, labels = (
-        ps.latent,
-        ps.dataset.normalised_elemental_data,
-        ps.dataset.feature_list,
-        ps.labels,
-    )
+    latent = ps.latent
+    raw_dataset = ps.dataset.normalised_elemental_data
+    feature_list = ps.dataset.feature_list
+    labels = ps.labels
+
+    # Apply robust scaling to the elemental features
+    scaler = RobustScaler()
+    robust_scaled_dataset = scaler.fit_transform(raw_dataset.reshape(-1, raw_dataset.shape[-1]))
+
+    # Reshape back if needed
+    dataset = robust_scaled_dataset
     x_id, y_id = np.meshgrid(range(ps.width), range(ps.height))
     x_id = x_id.ravel().reshape(-1, 1)
     y_id = y_id.ravel().reshape(-1, 1)
@@ -790,19 +795,37 @@ def check_latent_space(ps: PixelSegmenter, ratio_to_be_shown=0.25, show_map=Fals
 
 
 
-    # Base chart for data tables
-    ranked_text = alt.Chart(source).mark_bar().transform_filter(brush)
+    ranked_text = alt.Chart(source).mark_bar(clip=True).transform_filter(brush)
 
     # Data Bars
     columns = list()
     domain_barchart = (0, 1) if ps.dataset_norm.max() < 1.0 else (-4, 4)
+
+
+
     for item in feature_list:
-        columns.append(
+        chart = (
             ranked_text.encode(
-                y=alt.Y(f"mean({item}):Q", scale=alt.Scale(domain=domain_barchart))
-            ).properties(title=alt.TitleParams(text=item))
+                y=alt.Y(
+                    f"mean({item}):Q",
+                    title=item,
+                    scale=alt.Scale(domain=domain_barchart),
+                    axis=alt.Axis(titleFontSize=10)
+                )
+            )
+            .properties(
+                title=alt.TitleParams(
+                    text=item,
+                    anchor="middle",
+                    fontSize=11,
+                    dy=-10  # Pull the title closer to chart (optional tweak)
+                )
+            )
         )
-    text = alt.hconcat(*columns)  # Combine bars
+        columns.append(chart)
+
+    text = alt.hconcat(*columns)
+
 
     # Heatmap
     if show_map == True:
@@ -1551,23 +1574,31 @@ def view_emi_dataset(tem, search_energy=True):
     display(tab)
 
 
-def show_abundance_map(ps:PixelSegmenter, weights:pd.DataFrame, components: pd.DataFrame):
-    def plot_rgb(ps, phases:List):
+def show_abundance_map(ps: PixelSegmenter, weights: pd.DataFrame, components: pd.DataFrame):
+    def plot_rgb(ps, phases: List):
         shape = ps.get_binary_map_spectra_profile(0)[0].shape
         img = np.zeros((shape[0], shape[1], 3))
-        
-        # make abundance map
+
         for i, phase in enumerate(phases):
-            if phase!='None':
-                cpnt_weights = weights[phase]/weights[phase].max()
+            if phase != 'None':
+                if phase not in weights.columns:
+                    continue
+
+                cpnt_weights = weights[phase] / weights[phase].max()
                 tmp = np.zeros(shape)
-                for j in range(ps.n_components):
+
+                valid_clusters = cpnt_weights.index
+                for cluster_label in valid_clusters:
                     try:
-                        idx = ps.get_binary_map_spectra_profile(j)[1]
-                        tmp[idx] = cpnt_weights[j]
-                    except ValueError:
+                        cluster_id = int(''.join(filter(str.isdigit, cluster_label)))
+                        if cluster_id not in ps.labels:
+                            continue
+
+                        idx = ps.get_binary_map_spectra_profile(cluster_id, use_label=True)[1]
+                        tmp[idx] = cpnt_weights.loc[cluster_label]
+                    except:
                         pass
-                        # print(f'warning: no pixel is assigned to cpnt_{j}.')
+
                 img[:, :, i] = tmp
             else:
                 img[:, :, i] = np.zeros(shape)
@@ -1577,7 +1608,7 @@ def show_abundance_map(ps:PixelSegmenter, weights:pd.DataFrame, components: pd.D
         axs.axis("off")
         plt.show()
         return fig
-    
+
     cpnt_names = [f'cpnt_{i}' for i in range(len(weights.columns))] 
     cpnt_options = [x for x in zip(cpnt_names, weights.columns)] + [('None', 'None')]
     dropdown_r = widgets.Dropdown(options=cpnt_options, value='None', description="Red:")
@@ -1586,48 +1617,35 @@ def show_abundance_map(ps:PixelSegmenter, weights:pd.DataFrame, components: pd.D
 
     plots_output = widgets.Output()
     with plots_output:
-        fig = plot_rgb(
-            ps,
-            phases=['None', 'None', 'None'],
-        )
+        fig = plot_rgb(ps, phases=['None', 'None', 'None'])
         save_fig(fig)
 
     def dropdown_r_eventhandler(change):
         plots_output.clear_output()
         with plots_output:
-            fig = plot_rgb(
-                ps,
-                phases=[change.new, dropdown_g.value, dropdown_b.value],
-            )
+            fig = plot_rgb(ps, phases=[change.new, dropdown_g.value, dropdown_b.value])
             save_fig(fig)
 
     def dropdown_g_eventhandler(change):
         plots_output.clear_output()
         with plots_output:
-            fig = plot_rgb(
-                ps,
-                phases=[dropdown_r.value, change.new, dropdown_b.value],
-            )
+            fig = plot_rgb(ps, phases=[dropdown_r.value, change.new, dropdown_b.value])
             save_fig(fig)
 
     def dropdown_b_eventhandler(change):
         plots_output.clear_output()
         with plots_output:
-            fig = plot_rgb(
-                ps,
-                phases=[dropdown_r.value, dropdown_g.value, change.new],
-            )
+            fig = plot_rgb(ps, phases=[dropdown_r.value, dropdown_g.value, change.new])
             save_fig(fig)
 
     dropdown_r.observe(dropdown_r_eventhandler, names="value")
     dropdown_g.observe(dropdown_g_eventhandler, names="value")
     dropdown_b.observe(dropdown_b_eventhandler, names="value")
-    color_box = widgets.VBox([dropdown_r, dropdown_g, dropdown_b])
 
+    color_box = widgets.VBox([dropdown_r, dropdown_g, dropdown_b])
     display(color_box)
     display(plots_output)
-
-    
+   
 def plot_ternary_composition(ps:PixelSegmenter):
     # cluster_num:int,
     # elements:List,
