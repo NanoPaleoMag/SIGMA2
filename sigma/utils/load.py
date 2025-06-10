@@ -86,6 +86,11 @@ class SEMDataset(BaseDataset):
                     nav_img.data = np.dot(rgb[..., :3], [0.2989, 0.5870, 0.1140])
                 elif nav_img.data.ndim == 3 and nav_img.data.shape[-1] == 3:
                     nav_img.data = np.dot(nav_img.data[..., :3], [0.2989, 0.5870, 0.1140])
+                    
+                target_shape = sum_image.data.shape[-2:]  # (height, width)
+                if nav_img.data.shape != target_shape:
+                    nav_img.data = resize(nav_img.data, target_shape, preserve_range=True, anti_aliasing=True)
+                    nav_img.data = nav_img.data.astype(np.float32)
 
                 # Sync axes info
                 nav_img.axes_manager[0].units = sum_image.axes_manager[0].units
