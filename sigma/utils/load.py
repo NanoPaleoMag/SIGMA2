@@ -75,7 +75,31 @@ class SEMDataset(BaseDataset):
                 self.base_dataset.axes_manager[1].units='μm'
                 
             
-            nav_img = self.base_dataset.sum(axis=2)
+            sum_image=self.base_dataset.sum(axis=2)
+            if nag_file_path is not None:
+                
+                nav_img = hs.load(nag_file_path)
+
+                # Convert RGB (structured or regular) to grayscale if needed
+                if nav_img.data.dtype.names is not None:
+                    rgb = np.stack([nav_img.data[name] for name in ('R', 'G', 'B')], axis=-1)
+                    nav_img.data = np.dot(rgb[..., :3], [0.2989, 0.5870, 0.1140])
+                elif nav_img.data.ndim == 3 and nav_img.data.shape[-1] == 3:
+                    nav_img.data = np.dot(nav_img.data[..., :3], [0.2989, 0.5870, 0.1140])
+
+                # Sync axes info
+                nav_img.axes_manager[0].units = sum_image.axes_manager[0].units
+                nav_img.axes_manager[1].units = sum_image.axes_manager[1].units
+                nav_img.axes_manager[0].scale = (
+                    sum_image.axes_manager[0].scale * (sum_image.axes_manager[0].size / nav_img.axes_manager[0].size)
+                )
+                nav_img.axes_manager[1].scale = (
+                    sum_image.axes_manager[1].scale * (sum_image.axes_manager[1].size / nav_img.axes_manager[1].size)
+                )
+
+
+            else:
+                nav_img = sum_image
             
             self.original_nav_img = nav_img
             self.nav_img = nav_img
