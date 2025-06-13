@@ -659,7 +659,7 @@ def plot_latent_density(ps: PixelSegmenter, bins=50):
     fig.show()
 
 
-def check_latent_space(ps: PixelSegmenter, ratio_to_be_shown=0.25, show_map=False):
+def check_latent_space(ps: PixelSegmenter, ratio_to_be_shown=0.25, show_map=False,alpha_cluster_map=0.75):
     #creating colours
     # Use recoloured cluster colors from interactive_latent_plot if available, otherwise fallback to default palette
     if hasattr(ps, 'cluster_colors') and ps.cluster_colors:
@@ -853,7 +853,7 @@ def check_latent_space(ps: PixelSegmenter, ratio_to_be_shown=0.25, show_map=Fals
                 color=alt.Color(
                     "Cluster_id:N", scale=alt.Scale(domain=domain, range=range_)
                 ),
-                opacity=alt.condition(brush, alt.value(0.75), alt.value(0)),
+                opacity=alt.condition(brush, alt.value(alpha_cluster_map), alt.value(0)),
             )
             .properties(width=ps.width*2, height=ps.height*2)
             .add_selection(brush)
