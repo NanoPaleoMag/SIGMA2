@@ -31,6 +31,8 @@ import plotly.express as px
 import pickle
 import os
 
+from tifffile import imsave
+
 
 class PixelSegmenter(object):
     def __init__(
@@ -1404,3 +1406,55 @@ class PixelSegmenter(object):
             instance.restore_dataset_state()
 
         return instance
+        
+    def export_cluster_masks(
+        self,
+        output_dir="cluster_masks",
+        high_res_path=None,
+        upscale_interpolation="nearest"
+    ):
+        """
+        Export binary mask images (black/white) for each cluster.
+
+        Parameters:
+        -----------
+        output_dir : str
+            Directory to save output mask .tif files.
+        high_res_path : str or None
+            Optional path to a high resolution reference image.
+            If provided, masks will be upscaled to match this image's resolution.
+        upscale_interpolation : str
+            Interpolation method used for resizing (e.g. "nearest", "bilinear", "bicubic").
+        """
+        os.makedirs(output_dir, exist_ok=True)
+
+        label_map = self.labels.reshape(self.height, self.width)
+        cluster_ids = sorted([c for c in np.unique(label_map) if c != -1])
+
+        # Get target resolution
+        if high_res_path:
+            import imageio
+            ref_img = imageio.imread(high_res_path)
+            target_shape = ref_img.shape[:2]
+        else:
+            target_shape = self.nav_img.data.shape[:2]
+
+        for cluster_id in cluster_ids:
+            # Binary mask: 1 where cluster matches, else 0
+            binary_mask = (label_map == cluster_id).astype(np.uint8)
+
+            # Resize if needed
+            if binary_mask.shape != target_shape:
+                binary_mask = resize(
+                    binary_mask,
+                    output_shape=target_shape,
+                    order=0 if upscale_interpolation == "nearest" else 1,
+                    preserve_range=True,
+                    anti_aliasing=False
+                ).astype(np.uint8)
+
+            # Save binary mask as .tif (0 for background, 255 for foreground)
+            out_path = os.path.join(output_dir, f"cluster_{cluster_id}.tif")
+            imsave(out_path, binary_mask * 255)
+
+        print(f"Exported {len(cluster_ids)} cluster mask(s) to '{output_dir}'.")
