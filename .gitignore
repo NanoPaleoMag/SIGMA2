@@ -82,5 +82,11 @@ results/
 *dm3
 *dm4
 *dmw
+*hspy
+*rpl
+*raw
+
+# Saved segmenter objects
+*.pkl
 
 

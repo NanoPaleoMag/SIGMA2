@@ -28,6 +28,9 @@ import seaborn as sns
 import plotly.graph_objects as go
 import plotly.express as px
 
+import pickle
+import os
+
 
 class PixelSegmenter(object):
     def __init__(
@@ -1311,3 +1314,93 @@ class PixelSegmenter(object):
         fig.subplots_adjust(wspace=0.05, hspace=0.0)
         plt.show()
         return fig
+        
+    def save_state(self, filepath):
+        """Save the current latent space, labels, and cluster colors to a file."""
+        state = {
+            'latent': self.latent,
+            'labels': self.labels,
+            'cluster_colors': self.cluster_colors,
+            'color_palette': self.color_palette,
+            'n_components': self.n_components,
+            'height': self.height,
+            'width': self.width
+        }
+        with open(filepath, 'wb') as f:
+            pickle.dump(state, f)
+        print(f"✅ Saved state to {filepath}")
+
+    def load_state(self, filepath):
+        """Load latent space, labels, and cluster colors from a file."""
+        if not os.path.isfile(filepath):
+            raise FileNotFoundError(f"File {filepath} does not exist.")
+
+        with open(filepath, 'rb') as f:
+            state = pickle.load(f)
+
+        self.latent = state['latent']
+        self.labels = state['labels']
+        self.cluster_colors = state['cluster_colors']
+        self.color_palette = state['color_palette']
+        self.n_components = state['n_components']
+        self.height = state['height']
+        self.width = state['width']
+        print(f"✅ Loaded state from {filepath}")    
+        
+        
+     
+     
+    
+    def restore_dataset_state(self):
+        if not hasattr(self, "dataset"):
+            raise AttributeError("Cannot restore state: 'dataset' is not set.")
+
+        self.dataset_norm = self.dataset.normalised_elemental_data
+        self.height = self.dataset_norm.shape[0]
+        self.width = self.dataset_norm.shape[1]
+
+        if hasattr(self.dataset, "spectra_bin") and self.dataset.spectra_bin is not None:
+            self.spectra = self.dataset.spectra_bin
+        else:
+            self.spectra = getattr(self.dataset, "spectra", None)
+
+        if hasattr(self.dataset, "nav_img_bin") and self.dataset.nav_img_bin is not None:
+            self.nav_img = self.dataset.nav_img_bin
+        else:
+            self.nav_img = getattr(self.dataset, "nav_img", None)
+
+        if hasattr(self.dataset, "spectra") and self.spectra is not None:
+            ax = self.spectra.axes_manager[2]
+            self.energy_axis = [(a * ax.scale + ax.offset) for a in range(ax.size)]
+
+        self.peak_list = getattr(self.dataset, "feature_list", [])
+
+
+    @classmethod
+    def from_saved_state(cls, filepath, dataset=None):
+        """Instantiate a PixelSegmenter from saved state. Dataset must be provided manually if needed."""
+        if not os.path.isfile(filepath):
+            raise FileNotFoundError(f"File {filepath} does not exist.")
+
+        with open(filepath, 'rb') as f:
+            state = pickle.load(f)
+
+        instance = cls.__new__(cls)
+
+        # Set attributes from saved state
+        instance.latent = state['latent']
+        instance.labels = state['labels']
+        instance.cluster_colors = state['cluster_colors']
+        instance.color_palette = state['color_palette']
+        instance.n_components = state['n_components']
+        instance.height = state['height']
+        instance.width = state['width']
+        
+        # You can choose to warn or error if dataset is not passed
+        if dataset is None:
+            print("⚠️ Dataset not provided. You must set 'ps.data' manually before using this instance.")
+        else:
+            instance.dataset = dataset
+            instance.restore_dataset_state()
+
+        return instance
