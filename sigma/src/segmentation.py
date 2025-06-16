@@ -1232,7 +1232,7 @@ class PixelSegmenter(object):
 
 
 
-    def plot_NMF_map(self, cmap=None, alpha_cluster_map=0.75):
+    def plot_NMF_map(self,weights, cmap=None, alpha_cluster_map=0.75):
         """
         Plot the NMF components alongside the navigation image.
 
@@ -1259,7 +1259,7 @@ class PixelSegmenter(object):
         fig, axs = plt.subplots(nrows=1, ncols=2, sharey=True, figsize=(8, 4), dpi=100)
         axs[1].imshow(img, cmap="gray", interpolation="none", alpha=1.0) #showing the navigation image
 
-        weights=self.NMF_weights
+        
 
         cpnt_names = [f'cluster_{i}' for i in range(len(weights.columns))] 
         cpnt_options = [x for x in zip(cpnt_names, weights.columns)]
