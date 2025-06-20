@@ -1326,7 +1326,10 @@ class PixelSegmenter(object):
             'color_palette': self.color_palette,
             'n_components': self.n_components,
             'height': self.height,
-            'width': self.width
+            'width': self.width,
+            "method": self.method,
+            "method_args": self.method_args,
+            'peak_dict': self.peak_dict,
         }
         with open(filepath, 'wb') as f:
             pickle.dump(state, f)
@@ -1347,6 +1350,9 @@ class PixelSegmenter(object):
         self.n_components = state['n_components']
         self.height = state['height']
         self.width = state['width']
+        self.method = saved_data['method']
+        self.method_args = saved_data['method_args']
+        self.peak_dict = saved_data['peak_dict']
         print(f"✅ Loaded state from {filepath}")    
         
         
@@ -1397,6 +1403,10 @@ class PixelSegmenter(object):
         instance.n_components = state['n_components']
         instance.height = state['height']
         instance.width = state['width']
+        instance.method= state["method"]
+        instance.method_args = state["method_args"]
+        instance.peak_dict = state["peak_dict"]
+
         
         # You can choose to warn or error if dataset is not passed
         if dataset is None:
