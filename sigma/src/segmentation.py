@@ -52,6 +52,7 @@ class PixelSegmenter(object):
         self.method_args = method_args
         self.height = self.dataset_norm.shape[0]
         self.width = self.dataset_norm.shape[1]
+        self.manual_cluster_colors={}
 
         # Set spectra and nav_img signal to the corresponding ones
         if type(dataset) not in [IMAGEDataset, PIXLDataset]:
@@ -1330,6 +1331,8 @@ class PixelSegmenter(object):
             "method": self.method,
             "method_args": self.method_args,
             'peak_dict': self.peak_dict,
+            'manual_cluster_colors': self.manual_cluster_colors,
+
         }
         with open(filepath, 'wb') as f:
             pickle.dump(state, f)
@@ -1353,6 +1356,7 @@ class PixelSegmenter(object):
         self.method = saved_data['method']
         self.method_args = saved_data['method_args']
         self.peak_dict = saved_data['peak_dict']
+        self.manual_cluster_colors = saved_data['manual_cluster_colors']
         print(f"✅ Loaded state from {filepath}")    
         
         
@@ -1406,8 +1410,10 @@ class PixelSegmenter(object):
         instance.method= state["method"]
         instance.method_args = state["method_args"]
         instance.peak_dict = state["peak_dict"]
+        instance.manual_cluster_colors = state['manual_cluster_colors']
 
-        
+        if not hasattr(instance, 'color_norm'):
+            instance.color_norm = mcolors.Normalize()
         # You can choose to warn or error if dataset is not passed
         if dataset is None:
             print("⚠️ Dataset not provided. You must set 'ps.data' manually before using this instance.")
