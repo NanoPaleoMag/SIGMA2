@@ -145,9 +145,15 @@ def plot_sum_spectrum(spectra, xray_lines=True):
     fig.show()
 
 
-def plot_intensity_maps(spectra, element_list, colors=[], save=None):
+def plot_intensity_maps(spectra, element_list, colors=[], save=None,include_nav_img=None):
     feature_dict = {el: i for (i, el) in enumerate(element_list)}
+    
     num_peak = len(element_list)
+    if include_nav_img is not None:
+        feature_dict['Navigator']=len(feature_dict.values())
+        num_peak+=1
+        element_list.append('Navigator')
+    
     if num_peak > 3:
         n_rows = (num_peak + 2) // 3
         n_cols = 3
@@ -194,7 +200,9 @@ def plot_intensity_maps(spectra, element_list, colors=[], save=None):
 
 
                 el = element_list[cur_peak]
-                if (type(spectra) is EDSSEMSpectrum) or (type(spectra) is EDSTEMSpectrum):
+                if el == 'Navigator':
+                    el_map=include_nav_img.data
+                elif (type(spectra) is EDSSEMSpectrum) or (type(spectra) is EDSTEMSpectrum):
                     el_map = spectra.get_lines_intensity([el])[0].data
                 else:
                     el_map = spectra[:, :, feature_dict[el]]

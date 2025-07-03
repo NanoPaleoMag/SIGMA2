@@ -253,9 +253,14 @@ def view_dataset(dataset:Union[SEMDataset, TEMDataset, IMAGEDataset], search_ene
         visual.plot_sum_spectrum(dataset.spectra)
 
     elemental_map_out = widgets.Output()
+    
+
+    element_list = dataset.feature_list
+
+        
     with elemental_map_out:
         pick_color(
-            visual.plot_intensity_maps, spectra=dataset.spectra, element_list=dataset.feature_list
+            visual.plot_intensity_maps, spectra=dataset.spectra, element_list=element_list,include_nav_img=dataset.nav_img_feature
         )
         # fig = visual.plot_intensity_maps(sem.spectra, sem.feature_list)
         # save_fig(fig)
@@ -306,7 +311,7 @@ def view_dataset(dataset:Union[SEMDataset, TEMDataset, IMAGEDataset], search_ene
 
         elemental_map_out.clear_output()
         with elemental_map_out:
-            visual.plot_intensity_maps(dataset.spectra, dataset.feature_list)
+            visual.plot_intensity_maps(dataset.spectra, dataset.feature_list,include_nav_img=dataset.nav_img_feature)
 
         if dataset.spectra_bin is not None:
             elemental_map_out_bin.clear_output()

@@ -18,7 +18,7 @@ import copy
 class SEMDataset(BaseDataset):
     def __init__(self, file_path: Union[str, Path], nag_file_path: Union[str, Path]=None):
         super().__init__(file_path)
-
+        self.nav_img_feature = None # setting this as None, so it can be later loaded
         # for .bcf files:
         if file_path.endswith('.bcf'):
             for dataset in self.base_dataset:
@@ -60,18 +60,45 @@ class SEMDataset(BaseDataset):
             
             self.base_dataset.set_signal_type('EDS_SEM')
             
-            if not isfile(file_path[:-4]+'.par'):
-                print("could not find .par file - no scaling applied to spatial axis, and assuming scale of 20kV/2048 channels in spectra axis")
-                self.base_dataset.axes_manager[2].scale=20/2048
+            scale=None
+            offset=None
+            
+            if isfile(file_path[:-4]+'.txt'):
+                with open(file_path[:-4]+'.txt') as f:
+                    for line in f:
+                        if "#FORMAT      : EMSA/MAS Spectral Data File" in line: #check if .txt file is EMSA format
+                            for line in f:
+                                if line.startswith("#XPERCHAN"):
+                                    scale = float(re.findall("(\d+\.\d+)", line)[0]) #using regular expression to extract the float from this line
+                                elif line.startswith("#OFFSET"):
+                                    offset = float(re.findall("(\d+\.\d+)", line)[0])
+                                    if "-" in line:
+                                        offset = 0-offset
+                            break
+                        
+            
             else:
-                print('reading parameters from '+file_path[:-4]+'.par')
+                print("could not find EMSA/MAS file assuming scale of 0.01keV /Ch and offset of -0.2 keV")
+                self.base_dataset.axes_manager[2].scale=0.01
+                self.base_dataset.axes_manager[2].offset=-0.2
+            
+            if not isfile(file_path[:-4]+'.par'):
+                print("Could not find .par file - no scaling applied to x/y axis")
+            else:
+                print('reading x/y scaling parameters from '+file_path[:-4]+'.par')
                 params=read_par(file_path[:-4]+'.par')
-                self.base_dataset.axes_manager[2].scale=params['scale_spectral']
+                
                 self.base_dataset.axes_manager[0].scale=params['scale_x']
                 self.base_dataset.axes_manager[1].scale=params['scale_y']
                 
                 self.base_dataset.axes_manager[0].units='μm'
                 self.base_dataset.axes_manager[1].units='μm'
+                
+                if scale and offset:
+                    print("reading energy scale and offset from EMSA/MAS file")
+                    self.base_dataset.axes_manager[-1].scale=scale
+                    self.base_dataset.axes_manager[-1].offset=offset
+                    
                 
             
             sum_image=self.base_dataset.sum(axis=2)
@@ -176,6 +203,22 @@ class SEMDataset(BaseDataset):
         self.spectra.axes_manager[2].scale *= a
         self.spectra.axes_manager[2].offset = self.spectra.axes_manager[2].offset * a + b
         print("Calibration successful.")
+        
+    def add_nav_img_to_feature_list(self):
+        """
+        Method to add the navigation image to the feature_list. Nav img is downscaled to the resolution of the EDS images in the feature list
+        """
+        
+        #creating the image of the right size
+        nav_img=self.nav_img.deepcopy()
+        
+        nav_img_feature=nav_img.rebin(new_shape=self.spectra.data.shape[0:2])
+        
+        #adding this as a feature to be used with feature maps etc.
+        self.nav_img_feature=nav_img_feature
+        
+        
+        
 class IMAGEDataset(object):
     def __init__(self, 
                  chemical_maps_dir: Union[str, Path], 
