@@ -11,6 +11,8 @@ class TEMDataset(BaseDataset):
     def __init__(self, file_path: str):
         super().__init__(file_path)
         
+        self.nav_img_feature = None # setting this as None, so it can be later loaded
+        
         if type(self.base_dataset) == Signal2D:
             self.stem = self.base_dataset
             
@@ -152,3 +154,17 @@ class TEMDataset(BaseDataset):
             self.nav_img_bin.data = self.nav_img_bin.data[:index_NaN-1,:]
         if self.spectra_bin is not None:
             self.spectra_bin.data = self.spectra_bin.data[:index_NaN-1,:,:]
+            
+    def add_nav_img_to_feature_list(self):
+        """
+        Method to add the navigation image to the feature_list. Nav img is downscaled to the resolution of the EDS images in the feature list
+        """
+        
+        #creating the image of the right size
+        nav_img=self.nav_img.deepcopy()
+        
+        nav_img_feature=nav_img.rebin(new_shape=self.spectra.data.shape[0:2])
+        
+        #adding this as a feature to be used with feature maps etc.
+        self.nav_img_feature=nav_img_feature
+        
