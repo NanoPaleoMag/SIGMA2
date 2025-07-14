@@ -423,7 +423,7 @@ class PixelSegmenter(object):
 
         return masked_spectra
 
-    def phase_statics(
+    def phase_stats(
         self, cluster_num, element_peaks=["Fe_Ka", "O_Ka"], binary_filter_args={}
     ):
         """

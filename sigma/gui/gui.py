@@ -1440,7 +1440,7 @@ def show_cluster_stats(ps: PixelSegmenter, binary_filter_args={}):
         fig_list = []
         with output:
             for cluster in clusters:
-                df_stats = ps.phase_statics(
+                df_stats = ps.phase_stats(
                     cluster_num=int(cluster.split("_")[1]),
                     element_peaks=ps.peak_list,
                     binary_filter_args=binary_filter_args,
