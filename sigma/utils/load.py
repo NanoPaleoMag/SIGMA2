@@ -2,7 +2,7 @@ import os
 import numpy as np
 import hyperspy.api as hs
 
-from typing import Union, Tuple, List
+from typing import Union, Tuple, List, Callable
 from pathlib import Path
 from PIL import Image, ImageOps
 from os.path import isfile, join
@@ -11,6 +11,7 @@ from hyperspy._signals.eds_sem import EDSSEMSpectrum
 from hyperspy._signals.signal2d import Signal2D
 from .base import BaseDataset
 from scipy.signal import find_peaks
+
 
 import copy
 
@@ -204,18 +205,64 @@ class SEMDataset(BaseDataset):
         self.spectra.axes_manager[2].offset = self.spectra.axes_manager[2].offset * a + b
         print("Calibration successful.")
         
-    def add_nav_img_to_feature_list(self):
+
+        
+    def get_feature_maps_with_nav_img(self, normalisation: Union[str, list, Callable] = "zscore"):
         """
-        Method to add the navigation image to the feature_list. Nav img is downscaled to the resolution of the EDS images in the feature list
+        Returns combined feature maps including the navigation image, with optional normalisation.
+        
+        Parameters
+        ----------
+        normalisation : str, list of str, or callable
+            Normalisation method(s) for the nav image before combining.
         """
+
+
+        if self.normalised_elemental_data is not None:
+            feature_maps = self.normalised_elemental_data
+            if not normalisation:
+                print('WARNING - no normalisation parameters passed, but the dataset is normalised. Clustering may be adversely affected')
+            
+        else:
+            feature_maps = self.get_feature_maps(self.feature_list)  # shape: [x, y, n_features]
+
+        if self.nav_img is None:
+            raise ValueError("Navigation image not loaded. Call add_nav_img_to_feature_list() first.")
+
+        nav_img = self.nav_img.data
+
+        # Resize nav image if shape mismatch
+        if nav_img.shape != feature_maps.shape[:2]:
+            print(f"Resizing nav_img from {nav_img.shape} to {feature_maps.shape[:2]}")
+            nav_img = resize(nav_img, feature_maps.shape[:2], preserve_range=True, anti_aliasing=True).astype(np.float32)
+
+        # Apply normalisation
+        if isinstance(normalisation, str) or callable(normalisation):
+            normalisation = [normalisation]
+
+        for norm_step in normalisation:
+            if callable(norm_step):
+                nav_img = norm_step(nav_img[..., np.newaxis])[:, :, 0]
+            elif norm_step in [None, "none"]:
+                pass
+            else:
+                raise ValueError(f"Unknown normalisation method: {norm_step}")
+
+        # Expand nav_img to match feature dimension and combine
+        nav_img_expanded = nav_img[..., np.newaxis]  # shape: [x, y, 1]
+        combined = np.concatenate([feature_maps, nav_img_expanded], axis=-1)
+
         
-        #creating the image of the right size
-        nav_img=self.nav_img.deepcopy()
-        
-        nav_img_feature=nav_img.rebin(new_shape=self.spectra.data.shape[0:2])
-        
-        #adding this as a feature to be used with feature maps etc.
-        self.nav_img_feature=nav_img_feature
+        if self.normalised_elemental_data is not None:
+            self.normalised_elemental_data=combined
+            
+        else:
+            self.features_with_nav_img = combined
+
+        # Avoid appending "Navigator" more than once
+        if "Navigator" not in self.feature_list:
+            self.feature_list.append("Navigator")
+
         
         
         
