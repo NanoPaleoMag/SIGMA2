@@ -29,6 +29,8 @@ import ipywidgets as widgets
 from ipywidgets import Layout
 from IPython.display import display
 
+from umap import plot as umap_plot
+
 import matplotlib.colors as mcolors
 
 # to make sure the plot function works
@@ -1708,7 +1710,7 @@ def plot_ternary_composition(ps:PixelSegmenter):
 
 
 from plotly.subplots import make_subplots
-from ipywidgets import Button, Output, ToggleButtons, Dropdown, HBox, VBox, Layout, ColorPicker, HTML
+from ipywidgets import Button, Output, ToggleButtons, Dropdown, HBox, VBox, Layout, ColorPicker, HTML, Box
 from IPython.display import clear_output
 
 from IPython.display import HTML as IPyHTML
@@ -2100,3 +2102,33 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5, n_colours=30):
     ]))
 
 
+def view_latent_simple(latent):
+    
+    """
+    simple function to view latent space before clustering, to determine if UMAP parameters are sensible
+    latent: 2D array of points
+    """
+    
+    if latent.shape[1] != 2:
+        raise ValueError("latent must be a 2D array with shape (n_samples, 2)")
+
+    out = Output()
+
+    out.clear_output()
+    
+    out_box = Box([out], layout=Layout(flex="1 1 auto", width="auto"))
+
+    with out:
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.scatter(latent[:, 0], latent[:, 1], s=10, alpha=0.8)
+        ax.set_title("Latent Space Scatter")
+        ax.set_xlabel("Dim 1")
+        ax.set_ylabel("Dim 2")
+        ax.grid(True)
+        plt.tight_layout()
+        plt.show()
+        save_fig(fig)
+
+    # Layout
+
+    display(VBox([out_box]))
