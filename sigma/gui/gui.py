@@ -29,7 +29,6 @@ import ipywidgets as widgets
 from ipywidgets import Layout
 from IPython.display import display
 
-from umap import plot as umap_plot
 
 import matplotlib.colors as mcolors
 
