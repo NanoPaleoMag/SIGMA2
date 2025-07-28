@@ -186,6 +186,7 @@ class PixelSegmenter(object):
         keep_fraction=0.13,
         binary_filter_threshold=0.2,
     ):
+        # --- Step 1: Get binary mask from soft or hard clustering ---
         if not use_label:
             use_soft_mask = False
             if hasattr(self, "prob_map") and self.prob_map is not None and cluster_num < self.prob_map.shape[1]:
@@ -199,12 +200,8 @@ class PixelSegmenter(object):
                     pass
 
             if use_soft_mask:
-                if not denoise:
-                    binary_map = np.where(phase > threshold, 1, 0).reshape(self.height, self.width)
-                    binary_map_indices = np.where(phase.reshape(self.height, self.width) > threshold)
-                else:
-                    # Denoising logic unchanged
-                    ...
+                binary_map = np.where(phase > threshold, 1, 0).reshape(self.height, self.width)
+                binary_map_indices = np.where(phase.reshape(self.height, self.width) > threshold)
             else:
                 # fallback to hard labels
                 if hasattr(self, "labels"):
@@ -215,46 +212,40 @@ class PixelSegmenter(object):
                 binary_map_indices = np.where(binary_map == 1)
         else:
             binary_map = (self.labels == cluster_num).astype(int).reshape(self.height, self.width)
-            binary_map_indices = np.where(
-                self.labels.reshape(self.height, self.width) == cluster_num
-            )
+            binary_map_indices = np.where(self.labels.reshape(self.height, self.width) == cluster_num)
 
-
-        # Get spectral profile in the filtered phase region
+        # --- Step 2: Gather feature values at the masked pixel locations ---
         x_id = binary_map_indices[0].reshape(-1, 1)
         y_id = binary_map_indices[1].reshape(-1, 1)
         x_y = np.concatenate([x_id, y_id], axis=1)
         x_y_indices = tuple(map(tuple, x_y))
 
-        if type(self.dataset) not in [IMAGEDataset,PIXLDataset]:
-            total_spectra_profiles = list()
-            for x_y_index in x_y_indices:
-                total_spectra_profiles.append(self.spectra.data[x_y_index].reshape(1, -1))
-            total_spectra_profiles = np.concatenate(total_spectra_profiles, axis=0)
+        # --- Step 3: Compute intensity profile from data ---
+        if isinstance(self.dataset, (IMAGEDataset, PIXLDataset)):
+            maps = self.dataset.chemical_maps_bin if self.dataset.chemical_maps_bin is not None else self.dataset.chemical_maps
+            assert maps.shape[-1] == len(self.dataset.feature_list), \
+                f"Shape mismatch: maps.shape[-1]={maps.shape[-1]} vs feature_list={len(self.dataset.feature_list)}"
 
+            total_spectra_profiles = np.array([maps[x, y, :] for x, y in x_y_indices])
+            energy_axis = self.dataset.feature_list
+        else:
+            total_spectra_profiles = np.array([self.spectra.data[x, y, :] for x, y in x_y_indices])
             size = self.spectra.axes_manager[2].size
             scale = self.spectra.axes_manager[2].scale
             offset = self.spectra.axes_manager[2].offset
             energy_axis = [((a * scale) + offset) for a in range(0, size)]
 
-            element_intensity_sum = total_spectra_profiles.sum(axis=0)
-            spectra_profile = pd.DataFrame(
-                data=np.column_stack([energy_axis, element_intensity_sum]),
-                columns=["energy", "intensity"],
-            )
-        else:
-            total_spectra_profiles = list()
-            for x_y_index in x_y_indices:
-                total_spectra_profiles.append(self.dataset.chemical_maps[x_y_index].reshape(1, -1))
-            total_spectra_profiles = np.concatenate(total_spectra_profiles, axis=0)
+        # --- Step 4: Compute mean intensity (instead of raw sum) ---
+        if total_spectra_profiles.shape[0] == 0:
+            raise ValueError(f"No pixels found in cluster {cluster_num}.")
 
-            energy_axis = self.dataset.feature_list
+        element_intensity_mean = total_spectra_profiles.mean(axis=0)
 
-            element_intensity_sum = total_spectra_profiles.sum(axis=0)
-            spectra_profile = pd.DataFrame(
-                data=np.column_stack([energy_axis, element_intensity_sum]),
-                columns=["energy", "intensity"],
-            )
+        spectra_profile = pd.DataFrame(
+            data=np.column_stack([energy_axis, element_intensity_mean]),
+            columns=["energy", "intensity"]
+        )
+
         return binary_map, binary_map_indices, spectra_profile
 
     def get_all_spectra_profile(self, normalised=True):
@@ -814,6 +805,8 @@ class PixelSegmenter(object):
                     print("⚠️ Warning: No exact 0.00 keV found in energy axis. Using index 0 for peak lookup.")
 
                 for el in self.dataset.feature_list:
+                    if el not in self.peak_dict:
+                        continue  # 🚫 skip non-element labels like "Navigator"
                     idx_offset = int(self.peak_dict[el] * 100) + 1
                     try:
                         peak_sum = intensity_sum[zero_energy_idx:][idx_offset]

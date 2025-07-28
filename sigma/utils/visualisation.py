@@ -304,12 +304,10 @@ def plot_pixel_distributions(
     fig.subplots_adjust(wspace=0.2, hspace=0.1)
     return fig
 
-
 def plot_profile(energy, intensity, peak_list, color=None):
     if type(intensity) is pd.core.series.Series:
         intensity = intensity.to_list()
-    
-    # Use specified color if given, else default to Plotly automatic
+
     trace = go.Scatter(
         x=energy,
         y=intensity,
@@ -330,9 +328,14 @@ def plot_profile(energy, intensity, peak_list, color=None):
     )
 
     zero_energy_idx = np.where(np.array(energy).round(2) == 0)[0][0]
-    
+
     for el in peak_list:
-        peak = intensity[zero_energy_idx:][int(peak_dict[el] * 100) + 1]
+        if el not in peak_dict:
+            continue  # 🛑 Skip unknown peaks like "Navigator"
+        try:
+            peak = intensity[zero_energy_idx:][int(peak_dict[el] * 100) + 1]
+        except IndexError:
+            continue  # 🛑 Gracefully skip if index is out of range
         fig.add_shape(
             type="line",
             x0=peak_dict[el],
