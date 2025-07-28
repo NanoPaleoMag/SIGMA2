@@ -236,6 +236,7 @@ def view_dataset(dataset:Union[SEMDataset, TEMDataset, IMAGEDataset], search_ene
 
 
     """
+    
     if search_energy == True:
         search_energy_peak()
 
@@ -273,6 +274,7 @@ def view_dataset(dataset:Union[SEMDataset, TEMDataset, IMAGEDataset], search_ene
                 visual.plot_intensity_maps,
                 spectra=dataset.spectra_bin,
                 element_list=dataset.feature_list,
+                include_nav_img=dataset.nav_img_feature.rebin(dataset.spectra_bin.axes_manager.navigation_shape)
             )
             # fig = visual.plot_intensity_maps(sem.spectra_bin, sem.feature_list)
             # save_fig(fig)
@@ -383,11 +385,35 @@ def view_im_dataset(im):
         out.clear_output()
         with out:
             feature_list = text.value.replace(" ", "").split(",")
-            im.set_feature_list(feature_list)
+
+            # Deduplicate while preserving order
+            seen = set()
+            cleaned_list = []
+            for el in feature_list:
+                if el not in seen:
+                    cleaned_list.append(el)
+                    seen.add(el)
+
+            # Ensure "Navigator" appears once at the end if it's anywhere in the list
+            if "Navigator" in cleaned_list:
+                cleaned_list = [el for el in cleaned_list if el != "Navigator"]
+                cleaned_list.append("Navigator")
+
+            dataset.set_feature_list(cleaned_list)
+
+        sum_spec_out.clear_output()
+        with sum_spec_out:
+            visual.plot_sum_spectrum(dataset.spectra)
 
         elemental_map_out.clear_output()
         with elemental_map_out:
-            visual.plot_intensity_maps(im.chemical_maps, im.feature_list)
+            visual.plot_intensity_maps(dataset.spectra, dataset.feature_list, include_nav_img=dataset.nav_img_feature)
+
+        if dataset.spectra_bin is not None:
+            elemental_map_out_bin.clear_output()
+            with elemental_map_out_bin:
+                visual.plot_intensity_maps(dataset.spectra_bin, dataset.feature_list)
+
 
 
     button.on_click(set_to)
