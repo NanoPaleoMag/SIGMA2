@@ -259,11 +259,13 @@ class SEMDataset(BaseDataset):
         else:
             self.features_with_nav_img = combined
 
-        # Avoid appending "Navigator" more than once
-        if "Navigator" not in self.feature_list:
-            self.feature_list.append("Navigator")
 
+
+        self.feature_list = [el for el in self.feature_list if el != "Navigator"]
+        self.feature_list.append("Navigator")
         
+        self.nav_img_feature = self.nav_img
+
         
         
 class IMAGEDataset(object):
