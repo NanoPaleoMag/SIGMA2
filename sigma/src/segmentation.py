@@ -1104,24 +1104,29 @@ class PixelSegmenter(object):
                             zero_energy_idx = 0
                         intensity = components[cpnt].to_numpy()
                         for el in peak_list:
-                            peak = intensity[zero_energy_idx:][
-                                int(self.peak_dict[el] * 100) + 1
-                            ]
-                            axs_sub.vlines(
-                                self.peak_dict[el],
-                                0,
-                                0.9 * peak,
-                                linewidth=1,
-                                color="grey",
-                                linestyles="dashed",
-                            )
-                            axs_sub.text(
-                                self.peak_dict[el] - 0.18,
-                                peak + (intensity.max() / 15),
-                                el,
-                                rotation="vertical",
-                                fontsize=8,
-                            )
+                            if el not in self.peak_dict:
+                                continue  # Skip labels like "Navigator"
+                            try:
+                                idx_offset = int(self.peak_dict[el] * 100) + 1
+                                peak = intensity[zero_energy_idx:][idx_offset]
+                                axs_sub.vlines(
+                                    self.peak_dict[el],
+                                    0,
+                                    0.9 * peak,
+                                    linewidth=1,
+                                    color="grey",
+                                    linestyles="dashed",
+                                )
+                                axs_sub.text(
+                                    self.peak_dict[el] - 0.18,
+                                    peak + (intensity.max() / 15),
+                                    el,
+                                    rotation="vertical",
+                                    fontsize=8,
+                                )
+                            except IndexError:
+                                print(f"⚠️ Skipping peak {el}: index {idx_offset} out of range in component {cpnt}")
+
 
         fig.subplots_adjust(hspace=0.3, wspace=0.0)
         plt.tight_layout()
