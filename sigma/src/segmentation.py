@@ -52,6 +52,7 @@ class PixelSegmenter(object):
         self.method_args = method_args
         self.height = self.dataset_norm.shape[0]
         self.width = self.dataset_norm.shape[1]
+        self.manual_cluster_colors={}
 
         # Set spectra and nav_img signal to the corresponding ones
         if type(dataset) not in [IMAGEDataset, PIXLDataset]:
@@ -176,6 +177,7 @@ class PixelSegmenter(object):
     # Data Analysis #--------------------------------------------------------------
     #################
 
+
     def get_binary_map_spectra_profile(
         self,
         cluster_num=1,
@@ -185,6 +187,10 @@ class PixelSegmenter(object):
         keep_fraction=0.13,
         binary_filter_threshold=0.2,
     ):
+        # Determine spatial shape from spectra
+        spectra_shape = self.spectra.data.shape[:2]
+
+        # --- Step 1: Get binary mask from soft or hard clustering ---
         if not use_label:
             use_soft_mask = False
             if hasattr(self, "prob_map") and self.prob_map is not None and cluster_num < self.prob_map.shape[1]:
@@ -198,62 +204,53 @@ class PixelSegmenter(object):
                     pass
 
             if use_soft_mask:
-                if not denoise:
-                    binary_map = np.where(phase > threshold, 1, 0).reshape(self.height, self.width)
-                    binary_map_indices = np.where(phase.reshape(self.height, self.width) > threshold)
-                else:
-                    # Denoising logic unchanged
-                    ...
+                binary_map_flat = (phase > threshold).astype(int)
             else:
-                # fallback to hard labels
                 if hasattr(self, "labels"):
-                    label_mask = (self.labels == cluster_num).astype(int)
+                    binary_map_flat = (self.labels == cluster_num).astype(int)
                 else:
                     raise ValueError(f"Could not find soft or hard cluster mask for cluster {cluster_num}")
-                binary_map = label_mask.reshape(self.height, self.width)
-                binary_map_indices = np.where(binary_map == 1)
         else:
-            binary_map = (self.labels == cluster_num).astype(int).reshape(self.height, self.width)
-            binary_map_indices = np.where(
-                self.labels.reshape(self.height, self.width) == cluster_num
+            binary_map_flat = (self.labels == cluster_num).astype(int)
+
+        # Reshape flat map to match spectra 2D shape
+        if binary_map_flat.size != np.prod(spectra_shape):
+            raise ValueError(
+                f"Mismatch: label size ({binary_map_flat.size}) doesn't match spectra shape {spectra_shape}"
             )
 
+        binary_map = binary_map_flat.reshape(spectra_shape)
+        binary_map_indices = np.where(binary_map == 1)
 
-        # Get spectral profile in the filtered phase region
-        x_id = binary_map_indices[0].reshape(-1, 1)
-        y_id = binary_map_indices[1].reshape(-1, 1)
-        x_y = np.concatenate([x_id, y_id], axis=1)
-        x_y_indices = tuple(map(tuple, x_y))
+        # --- Step 2: Gather feature values at the masked pixel locations ---
+        if binary_map_indices[0].size == 0:
+            raise ValueError(f"No pixels found in cluster {cluster_num}.")
 
-        if type(self.dataset) not in [IMAGEDataset,PIXLDataset]:
-            total_spectra_profiles = list()
-            for x_y_index in x_y_indices:
-                total_spectra_profiles.append(self.spectra.data[x_y_index].reshape(1, -1))
-            total_spectra_profiles = np.concatenate(total_spectra_profiles, axis=0)
+        x_y_indices = tuple(zip(*binary_map_indices))
 
+        # --- Step 3: Compute intensity profile from data ---
+        if isinstance(self.dataset, (IMAGEDataset, PIXLDataset)):
+            maps = self.dataset.chemical_maps_bin if self.dataset.chemical_maps_bin is not None else self.dataset.chemical_maps
+            assert maps.shape[-1] == len(self.dataset.feature_list), \
+                f"Shape mismatch: maps.shape[-1]={maps.shape[-1]} vs feature_list={len(self.dataset.feature_list)}"
+
+            total_spectra_profiles = np.array([maps[x, y, :] for x, y in x_y_indices])
+            energy_axis = self.dataset.feature_list
+        else:
+            total_spectra_profiles = np.array([self.spectra.data[x, y, :] for x, y in x_y_indices])
             size = self.spectra.axes_manager[2].size
             scale = self.spectra.axes_manager[2].scale
             offset = self.spectra.axes_manager[2].offset
             energy_axis = [((a * scale) + offset) for a in range(0, size)]
 
-            element_intensity_sum = total_spectra_profiles.sum(axis=0)
-            spectra_profile = pd.DataFrame(
-                data=np.column_stack([energy_axis, element_intensity_sum]),
-                columns=["energy", "intensity"],
-            )
-        else:
-            total_spectra_profiles = list()
-            for x_y_index in x_y_indices:
-                total_spectra_profiles.append(self.dataset.chemical_maps[x_y_index].reshape(1, -1))
-            total_spectra_profiles = np.concatenate(total_spectra_profiles, axis=0)
+        # --- Step 4: Compute mean intensity ---
+        element_intensity_mean = total_spectra_profiles.mean(axis=0)
 
-            energy_axis = self.dataset.feature_list
+        spectra_profile = pd.DataFrame(
+            data=np.column_stack([energy_axis, element_intensity_mean]),
+            columns=["energy", "intensity"]
+        )
 
-            element_intensity_sum = total_spectra_profiles.sum(axis=0)
-            spectra_profile = pd.DataFrame(
-                data=np.column_stack([energy_axis, element_intensity_sum]),
-                columns=["energy", "intensity"],
-            )
         return binary_map, binary_map_indices, spectra_profile
 
     def get_all_spectra_profile(self, normalised=True):
@@ -422,7 +419,7 @@ class PixelSegmenter(object):
 
         return masked_spectra
 
-    def phase_statics(
+    def phase_stats(
         self, cluster_num, element_peaks=["Fe_Ka", "O_Ka"], binary_filter_args={}
     ):
         """
@@ -813,6 +810,8 @@ class PixelSegmenter(object):
                     print("⚠️ Warning: No exact 0.00 keV found in energy axis. Using index 0 for peak lookup.")
 
                 for el in self.dataset.feature_list:
+                    if el not in self.peak_dict:
+                        continue  # 🚫 skip non-element labels like "Navigator"
                     idx_offset = int(self.peak_dict[el] * 100) + 1
                     try:
                         peak_sum = intensity_sum[zero_energy_idx:][idx_offset]
@@ -937,6 +936,14 @@ class PixelSegmenter(object):
                 nav_img = resize(self.dataset.intensity_map, self.dataset.chemical_maps.shape[:2])
             else:
                 nav_img = self.dataset.intensity_map
+                
+            # Match shape if needed
+        if nav_img.shape != binary_map.shape:
+            try:
+                target_shape = binary_map.shape[::-1]  # reverses (y, x) → (x, y)
+                nav_img = (self.dataset.nav_img_bin or self.dataset.nav_img).rebin(target_shape).data
+            except Exception as e:
+                print(f"⚠️ Could not rebin nav_img: {e}")
 
         axs[1].imshow(nav_img, cmap="gray", interpolation="none", alpha=0.9)
         axs[1].scatter(
@@ -1110,24 +1117,29 @@ class PixelSegmenter(object):
                             zero_energy_idx = 0
                         intensity = components[cpnt].to_numpy()
                         for el in peak_list:
-                            peak = intensity[zero_energy_idx:][
-                                int(self.peak_dict[el] * 100) + 1
-                            ]
-                            axs_sub.vlines(
-                                self.peak_dict[el],
-                                0,
-                                0.9 * peak,
-                                linewidth=1,
-                                color="grey",
-                                linestyles="dashed",
-                            )
-                            axs_sub.text(
-                                self.peak_dict[el] - 0.18,
-                                peak + (intensity.max() / 15),
-                                el,
-                                rotation="vertical",
-                                fontsize=8,
-                            )
+                            if el not in self.peak_dict:
+                                continue  # Skip labels like "Navigator"
+                            try:
+                                idx_offset = int(self.peak_dict[el] * 100) + 1
+                                peak = intensity[zero_energy_idx:][idx_offset]
+                                axs_sub.vlines(
+                                    self.peak_dict[el],
+                                    0,
+                                    0.9 * peak,
+                                    linewidth=1,
+                                    color="grey",
+                                    linestyles="dashed",
+                                )
+                                axs_sub.text(
+                                    self.peak_dict[el] - 0.18,
+                                    peak + (intensity.max() / 15),
+                                    el,
+                                    rotation="vertical",
+                                    fontsize=8,
+                                )
+                            except IndexError:
+                                print(f"⚠️ Skipping peak {el}: index {idx_offset} out of range in component {cpnt}")
+
 
         fig.subplots_adjust(hspace=0.3, wspace=0.0)
         plt.tight_layout()
@@ -1326,7 +1338,12 @@ class PixelSegmenter(object):
             'color_palette': self.color_palette,
             'n_components': self.n_components,
             'height': self.height,
-            'width': self.width
+            'width': self.width,
+            "method": self.method,
+            "method_args": self.method_args,
+            'peak_dict': self.peak_dict,
+            'manual_cluster_colors': self.manual_cluster_colors,
+
         }
         with open(filepath, 'wb') as f:
             pickle.dump(state, f)
@@ -1347,6 +1364,10 @@ class PixelSegmenter(object):
         self.n_components = state['n_components']
         self.height = state['height']
         self.width = state['width']
+        self.method = saved_data['method']
+        self.method_args = saved_data['method_args']
+        self.peak_dict = saved_data['peak_dict']
+        self.manual_cluster_colors = saved_data['manual_cluster_colors']
         print(f"✅ Loaded state from {filepath}")    
         
         
@@ -1397,7 +1418,13 @@ class PixelSegmenter(object):
         instance.n_components = state['n_components']
         instance.height = state['height']
         instance.width = state['width']
-        
+        instance.method= state["method"]
+        instance.method_args = state["method_args"]
+        instance.peak_dict = state["peak_dict"]
+        instance.manual_cluster_colors = state['manual_cluster_colors']
+
+        if not hasattr(instance, 'color_norm'):
+            instance.color_norm = mcolors.Normalize()
         # You can choose to warn or error if dataset is not passed
         if dataset is None:
             print("⚠️ Dataset not provided. You must set 'ps.data' manually before using this instance.")

@@ -11,263 +11,191 @@ from hyperspy._signals.eds_sem import EDSSEMSpectrum
 from hyperspy._signals.signal2d import Signal2D
 from .base import BaseDataset
 from scipy.signal import find_peaks
-
+import h5py
 
 import copy
 
 
 class SEMDataset(BaseDataset):
-    def __init__(self, file_path: Union[str, Path], nag_file_path: Union[str, Path]=None):
+    def __init__(self, file_path: Union[str, Path], nag_file_path: Union[str, Path] = None):
         super().__init__(file_path)
-        self.nav_img_feature = None # setting this as None, so it can be later loaded
-        # for .bcf files:
-        if file_path.endswith('.bcf'):
-            for dataset in self.base_dataset:
-                if (self.nav_img is None) and (type(dataset) is Signal2D):
-                    self.original_nav_img = dataset
-                    self.nav_img = dataset  # load BSE data
-                elif (self.nav_img is not None) and (type(dataset) is Signal2D):
-                    old_w, old_h = self.nav_img.data.shape
-                    new_w, new_h = dataset.data.shape
-                    if (new_w + new_h) < (old_w + old_h):
+        self.nav_img_feature = None
+
+        if str(file_path).endswith(".h5oina"):
+            self._load_h5oina(file_path)
+        else:
+            self.base_dataset = hs.load(file_path)
+
+            if str(file_path).endswith('.bcf'):
+                for dataset in self.base_dataset:
+                    if (self.nav_img is None) and isinstance(dataset, Signal2D):
                         self.original_nav_img = dataset
                         self.nav_img = dataset
-                elif type(dataset) is EDSSEMSpectrum:
-                    self.original_spectra = dataset
-                    self.spectra = dataset  # load spectra data from bcf file
+                    elif (self.nav_img is not None) and isinstance(dataset, Signal2D):
+                        if sum(dataset.data.shape) < sum(self.nav_img.data.shape):
+                            self.original_nav_img = dataset
+                            self.nav_img = dataset
+                    elif isinstance(dataset, hs.signals.EDSSEMSpectrum):
+                        self.original_spectra = dataset
+                        self.spectra = dataset
 
-        # for .hspy files:
-        elif file_path.endswith('.hspy'):
-            if nag_file_path is not None:
-                assert nag_file_path.endswith('.hspy')
-                nav_img = hs.load(nag_file_path)
-            else:
-                nav_img = Signal2D(self.base_dataset.sum(axis=2).data).T
-            
-            self.original_nav_img = nav_img
-            self.nav_img = nav_img
-            self.original_spectra = self.base_dataset
-            self.spectra = self.base_dataset
-            
-        #for .rpl files from AZTEC
-        elif file_path.endswith('.rpl'):
-            self.base_dataset=self.base_dataset.transpose()
-            
-            #setting up the units as the rpl file has none
-            self.base_dataset.axes_manager[2].name='Energy'
-            self.base_dataset.axes_manager[2].units='keV'
-            self.base_dataset.axes_manager[0].name='width'
-            self.base_dataset.axes_manager[1].name='height'
-            
-            self.base_dataset.set_signal_type('EDS_SEM')
-            
-            scale=None
-            offset=None
-            
-            if isfile(file_path[:-4]+'.txt'):
-                with open(file_path[:-4]+'.txt') as f:
-                    for line in f:
-                        if "#FORMAT      : EMSA/MAS Spectral Data File" in line: #check if .txt file is EMSA format
-                            for line in f:
-                                if line.startswith("#XPERCHAN"):
-                                    scale = float(re.findall("(\d+\.\d+)", line)[0]) #using regular expression to extract the float from this line
-                                elif line.startswith("#OFFSET"):
-                                    offset = float(re.findall("(\d+\.\d+)", line)[0])
-                                    if "-" in line:
-                                        offset = 0-offset
-                            break
-                        
-            
-            else:
-                print("could not find EMSA/MAS file assuming scale of 0.01keV /Ch and offset of -0.2 keV")
-                self.base_dataset.axes_manager[2].scale=0.01
-                self.base_dataset.axes_manager[2].offset=-0.2
-            
-            if not isfile(file_path[:-4]+'.par'):
-                print("Could not find .par file - no scaling applied to x/y axis")
-            else:
-                print('reading x/y scaling parameters from '+file_path[:-4]+'.par')
-                params=read_par(file_path[:-4]+'.par')
-                
-                self.base_dataset.axes_manager[0].scale=params['scale_x']
-                self.base_dataset.axes_manager[1].scale=params['scale_y']
-                
-                self.base_dataset.axes_manager[0].units='μm'
-                self.base_dataset.axes_manager[1].units='μm'
-                
-                if scale and offset:
-                    print("reading energy scale and offset from EMSA/MAS file")
-                    self.base_dataset.axes_manager[-1].scale=scale
-                    self.base_dataset.axes_manager[-1].offset=offset
-                    
-                
-            
-            sum_image=self.base_dataset.sum(axis=2)
-            if nag_file_path is not None:
-                
-                nav_img = hs.load(nag_file_path)
+            elif str(file_path).endswith('.hspy'):
+                if nag_file_path:
+                    nav_img = hs.load(nag_file_path)
+                else:
+                    nav_img = Signal2D(self.base_dataset.sum(axis=2).data).T
 
-                # Convert RGB (structured or regular) to grayscale if needed
-                if nav_img.data.dtype.names is not None:
-                    rgb = np.stack([nav_img.data[name] for name in ('R', 'G', 'B')], axis=-1)
-                    nav_img.data = np.dot(rgb[..., :3], [0.2989, 0.5870, 0.1140])
-                elif nav_img.data.ndim == 3 and nav_img.data.shape[-1] == 3:
-                    nav_img.data = np.dot(nav_img.data[..., :3], [0.2989, 0.5870, 0.1140])
-                    
-                target_shape = sum_image.data.shape[-2:]  # (height, width)
-                if nav_img.data.shape != target_shape:
-                    nav_img.data = resize(nav_img.data, target_shape, preserve_range=True, anti_aliasing=True)
-                    nav_img.data = nav_img.data.astype(np.float32)
+                self.original_nav_img = nav_img
+                self.nav_img = nav_img
+                self.original_spectra = self.base_dataset
+                self.spectra = self.base_dataset
 
-                # Sync axes info
-                nav_img.axes_manager[0].units = sum_image.axes_manager[0].units
-                nav_img.axes_manager[1].units = sum_image.axes_manager[1].units
-                nav_img.axes_manager[0].scale = (
-                    sum_image.axes_manager[0].scale * (sum_image.axes_manager[0].size / nav_img.axes_manager[0].size)
-                )
-                nav_img.axes_manager[1].scale = (
-                    sum_image.axes_manager[1].scale * (sum_image.axes_manager[1].size / nav_img.axes_manager[1].size)
-                )
+            elif str(file_path).endswith('.rpl'):
+                self.base_dataset = self.base_dataset.transpose()
+                self.base_dataset.axes_manager[2].name = 'Energy'
+                self.base_dataset.axes_manager[2].units = 'keV'
+                self.base_dataset.axes_manager[0].name = 'width'
+                self.base_dataset.axes_manager[1].name = 'height'
+                self.base_dataset.set_signal_type('EDS_SEM')
 
+                scale = offset = None
+                emsa_path = str(file_path)[:-4] + '.txt'
+                if isfile(emsa_path):
+                    with open(emsa_path) as f:
+                        for line in f:
+                            if "#FORMAT" in line:
+                                for line in f:
+                                    if line.startswith("#XPERCHAN"):
+                                        scale = float(re.findall(r"[-+]?\d*\.\d+|\d+", line)[0])
+                                    elif line.startswith("#OFFSET"):
+                                        offset = float(re.findall(r"[-+]?\d*\.\d+|\d+", line)[0])
+                                        if "-" in line:
+                                            offset = -abs(offset)
+                                break
+                else:
+                    print("Could not find EMSA file — using default energy calibration")
+                    self.base_dataset.axes_manager[2].scale = 0.01
+                    self.base_dataset.axes_manager[2].offset = -0.2
 
-            else:
-                nav_img = sum_image
-            
-            self.original_nav_img = nav_img
-            self.nav_img = nav_img
-            self.original_spectra = self.base_dataset
-            self.spectra = self.base_dataset
-            
-            
-        
-        
-        self.spectra.change_dtype("float32")  # change spectra data from unit8 into float32
-        
-        # reserve a copy of the raw data for quantification
+                par_path = str(file_path)[:-4] + '.par'
+                if isfile(par_path):
+                    print(f"Reading scaling from {par_path}")
+                    params = read_par(par_path)
+                    self.base_dataset.axes_manager[0].scale = params['scale_x']
+                    self.base_dataset.axes_manager[1].scale = params['scale_y']
+                    self.base_dataset.axes_manager[0].units = 'μm'
+                    self.base_dataset.axes_manager[1].units = 'μm'
+                    if scale and offset:
+                        self.base_dataset.axes_manager[2].scale = scale
+                        self.base_dataset.axes_manager[2].offset = offset
+
+                sum_image = self.base_dataset.sum(axis=2)
+                if nag_file_path:
+                    nav_img = hs.load(nag_file_path)
+                    if nav_img.data.dtype.names is not None:
+                        rgb = np.stack([nav_img.data[n] for n in ('R', 'G', 'B')], axis=-1)
+                        nav_img.data = np.dot(rgb[..., :3], [0.2989, 0.5870, 0.1140])
+                    elif nav_img.data.ndim == 3 and nav_img.data.shape[-1] == 3:
+                        nav_img.data = np.dot(nav_img.data[..., :3], [0.2989, 0.5870, 0.1140])
+
+                    target_shape = sum_image.data.shape[-2:]
+                    if nav_img.data.shape != target_shape:
+                        nav_img.data = resize(nav_img.data, target_shape, preserve_range=True, anti_aliasing=True).astype(np.float32)
+
+                    nav_img.axes_manager[0].units = sum_image.axes_manager[0].units
+                    nav_img.axes_manager[1].units = sum_image.axes_manager[1].units
+                    nav_img.axes_manager[0].scale = (
+                        sum_image.axes_manager[0].scale * sum_image.axes_manager[0].size / nav_img.axes_manager[0].size
+                    )
+                    nav_img.axes_manager[1].scale = (
+                        sum_image.axes_manager[1].scale * sum_image.axes_manager[1].size / nav_img.axes_manager[1].size
+                    )
+                else:
+                    nav_img = sum_image
+
+                self.original_nav_img = nav_img
+                self.nav_img = nav_img
+                self.original_spectra = self.base_dataset
+                self.spectra = self.base_dataset
+
+        # Final shared logic
+        self.spectra.change_dtype("float32")
         self.spectra_raw = self.spectra.deepcopy()
         self.spectra_raw.metadata.add_dictionary(self.spectra.metadata.as_dictionary())
-
-
-        
-        # #reserve a copy for calibration
         self.spectra_uncalibrated = self.spectra.deepcopy()
-        
+
         try:
             self.feature_list = self.spectra.metadata.Sample.xray_lines
-            self.feature_dict = {el: i for (i, el) in enumerate(self.feature_list)}
+            self.feature_dict = {el: i for i, el in enumerate(self.feature_list)}
         except AttributeError:
-            print('Unable to read X-Ray lines from sample metadata, setting blank list')
-            self.spectra.metadata.set_item('Sample.xray_lines',[])
+            print("No X-ray line metadata found — defaulting to empty")
+            self.spectra.metadata.set_item('Sample.xray_lines', [])
             
-    def calibrate_spectra(self, measured_peaks_dict=None, tolerance=0.2, reset=True):
-        # Reference line library
-        reference_library = {
-            'C_Ka': 0.277, 'N_Ka': 0.392, 'O_Ka': 0.525, 'F_Ka': 0.677, 'Na_Ka': 1.041,
-            'Mg_Ka': 1.253, 'Al_Ka': 1.486, 'Si_Ka': 1.740, 'P_Ka': 2.013, 'S_Ka': 2.308,
-            'Cl_Ka': 2.622, 'K_Ka': 3.312, 'Ca_Ka': 3.690, 'Ti_Ka': 4.510, 'Mn_Ka': 5.895,
-            'Fe_Ka': 6.404, 'Co_Ka': 6.930, 'Ni_Ka': 7.470, 'Cu_Ka': 8.040, 'Zn_Ka': 8.640,
-        }
-
-        if reset:
-        
-            self.spectra.data[:] = self.spectra_uncalibrated.data.copy()
-            self.spectra.axes_manager[2].scale = self.spectra_uncalibrated.axes_manager[2].scale
-            self.spectra.axes_manager[2].offset = self.spectra_uncalibrated.axes_manager[2].offset
-
-            # self.spectra.metadata.add_dictionary(self.spectra_uncalibrated.metadata.as_dictionary())
-
-
-        if measured_peaks_dict is not None:
-            matched_measured = []
-            matched_reference = []
-            for line, measured_energy in measured_peaks_dict.items():
-                if line not in reference_library:
-                    raise ValueError(f"Unknown line label '{line}'")
-                matched_measured.append(measured_energy)
-                matched_reference.append(reference_library[line])
-                print(f"[Manual] {line}: Measured = {measured_energy:.3f} keV → Ref = {reference_library[line]:.3f} keV")
-            matched_measured = np.array(matched_measured)
-            matched_reference = np.array(matched_reference)
-        else:
-            energy = self.spectra.axes_manager[2].axis
-            counts = self.spectra.sum().data
-            peaks_idx, _ = find_peaks(counts, height=0.05 * np.max(counts), distance=5)
-            measured_peaks = energy[peaks_idx]
-            reference_lines = np.array(list(reference_library.values()))
-            matched_measured, matched_reference = match_peaks(measured_peaks, reference_lines, tolerance=tolerance)
-
-        if len(matched_measured) < 2:
-            raise ValueError("Not enough matched peaks for calibration.")
-
-        a, b = np.polyfit(matched_measured, matched_reference, 1)
-        print(f"Calibration: E_corrected = {a:.6f} * E_measured + {b:.6f}")
-        self.spectra.axes_manager[2].scale *= a
-        self.spectra.axes_manager[2].offset = self.spectra.axes_manager[2].offset * a + b
-        print("Calibration successful.")
-        
-
-        
-    def get_feature_maps_with_nav_img(self, normalisation: Union[str, list, Callable] = "zscore"):
-        """
-        Returns combined feature maps including the navigation image, with optional normalisation.
-        
-        Parameters
-        ----------
-        normalisation : str, list of str, or callable
-            Normalisation method(s) for the nav image before combining.
-        """
-
-
-        if self.normalised_elemental_data is not None:
-            feature_maps = self.normalised_elemental_data
-            if not normalisation:
-                print('WARNING - no normalisation parameters passed, but the dataset is normalised. Clustering may be adversely affected')
             
-        else:
-            feature_maps = self.get_feature_maps(self.feature_list)  # shape: [x, y, n_features]
+    def _load_h5oina(self, file_path):
+            with h5py.File(file_path, 'r') as f:
+                ### --- Load SE Image --- ###
+                try:
+                    se_data = f['1/Electron Image/Data/SE']
+                    se_name = list(se_data.keys())[0]  # handles arbitrary dataset names
+                    se_dataset = se_data[se_name]
+                    
+                    x_se = int(f['1/Electron Image/Header/X Cells'][0])
+                    y_se = int(f['1/Electron Image/Header/Y Cells'][0])
+                    x_step_se = float(f['1/Electron Image/Header/X Step'][0])
+                    y_step_se = float(f['1/Electron Image/Header/Y Step'][0])
 
-        if self.nav_img is None:
-            raise ValueError("Navigation image not loaded. Call add_nav_img_to_feature_list() first.")
+                    se_img_flat = se_dataset[()]
+                    se_img = se_img_flat.reshape((y_se, x_se))  # (rows, cols)
 
-        nav_img = self.nav_img.data
+                    self.se_signal = hs.signals.Signal2D(se_img.astype(np.float32))
+                    self.se_signal.axes_manager[0].scale = y_step_se
+                    self.se_signal.axes_manager[1].scale = x_step_se
+                    self.se_signal.metadata.General.title = "SE Image"
+                    
+                    self.nav_img=self.se_signal
+                    self.nav_img.axes_manager[0].units='μm'
+                    self.nav_img.axes_manager[1].units='μm'
+                except Exception as e:
+                    print(f"Warning: SE image loading failed: {e}")
 
-        # Resize nav image if shape mismatch
-        if nav_img.shape != feature_maps.shape[:2]:
-            print(f"Resizing nav_img from {nav_img.shape} to {feature_maps.shape[:2]}")
-            nav_img = resize(nav_img, feature_maps.shape[:2], preserve_range=True, anti_aliasing=True).astype(np.float32)
+                ### --- Load EDS Spectrum Map --- ###
+                try:
+                    spectrum = f['1/EDS/Data/Spectrum'][()]
+                    x_eds = int(f['1/EDS/Header/X Cells'][0])
+                    y_eds = int(f['1/EDS/Header/Y Cells'][0])
+                    start_energy = float(f['1/EDS/Header/Start Channel'][0])
+                    channel_width = float(f['1/EDS/Header/Channel Width'][0])
 
-        # Apply normalisation
-        if isinstance(normalisation, str) or callable(normalisation):
-            normalisation = [normalisation]
+                    spectrum_reshaped = spectrum.reshape((y_eds, x_eds, -1))
+                    self.spectra = hs.signals.EDSSEMSpectrum(spectrum_reshaped)
+                    
+                    
+                    # Axes setup
+                    self.spectra.axes_manager[0].name = 'y'
+                    self.spectra.axes_manager[1].name = 'x'
+                    self.spectra.axes_manager[2].name = 'Energy'
+                    self.spectra.axes_manager[2].scale = channel_width/1000 #factor of 1000 to convert to keV
+                    self.spectra.axes_manager[2].offset = start_energy/1000
+                    self.spectra.metadata.General.title = "EDS Spectrum Map"
+                    self.spectra.axes_manager[2].units='keV'
+                except Exception as e:
+                    print(f"Warning: EDS spectrum loading failed: {e}")
+                    
+                # Resize nav_img to match spectra shape if needed
+                try:
+                    target_shape = self.spectra.data.shape[:2]  # (y, x)
+                    if self.nav_img.data.shape != target_shape:
+                        print(f"Resizing nav_img from {self.nav_img.data.shape} to {target_shape}")
+                        self.nav_img.data = resize(
+                            self.nav_img.data,
+                            target_shape,
+                            preserve_range=True,
+                            anti_aliasing=True
+                        ).astype(np.float32)
+                except Exception as e:
+                    print(f"Warning: nav_img resizing failed: {e}")
 
-        for norm_step in normalisation:
-            if callable(norm_step):
-                nav_img = norm_step(nav_img[..., np.newaxis])[:, :, 0]
-            elif norm_step in [None, "none"]:
-                pass
-            else:
-                raise ValueError(f"Unknown normalisation method: {norm_step}")
-
-        # Expand nav_img to match feature dimension and combine
-        nav_img_expanded = nav_img[..., np.newaxis]  # shape: [x, y, 1]
-        combined = np.concatenate([feature_maps, nav_img_expanded], axis=-1)
-
-        
-        if self.normalised_elemental_data is not None:
-            self.normalised_elemental_data=combined
-            
-        else:
-            self.features_with_nav_img = combined
-
-
-
-        self.feature_list = [el for el in self.feature_list if el != "Navigator"]
-        self.feature_list.append("Navigator")
-        
-        self.nav_img_feature = self.nav_img
-
-        
-        
 class IMAGEDataset(object):
     def __init__(self, 
                  chemical_maps_dir: Union[str, Path], 

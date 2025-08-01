@@ -15,7 +15,8 @@ hs.preferences.save()
         
 class BaseDataset(object):
     def __init__(self, file_path: Union[str, Path]):
-        self.base_dataset = hs.load(file_path)
+        self.file_path = file_path  # Just store path
+        self.base_dataset = None
         self.nav_img = None
         self.spectra = None
         self.original_nav_img = None
@@ -25,7 +26,6 @@ class BaseDataset(object):
         self.spectra_raw = None
         self.feature_list = []
         self.feature_dict = {}
-
     def set_feature_list(self, feature_list):
         """
         Sets the feautre_list attribute of the BaseDataSet to the defined feature list.

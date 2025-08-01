@@ -29,6 +29,7 @@ import ipywidgets as widgets
 from ipywidgets import Layout
 from IPython.display import display
 
+
 import matplotlib.colors as mcolors
 
 # to make sure the plot function works
@@ -213,88 +214,67 @@ def pick_color(plot_func, *args, **kwargs):
     display(final_box)
 
 
-def view_dataset(dataset:Union[SEMDataset, TEMDataset, IMAGEDataset], search_energy=True):
+def view_dataset(dataset: Union[SEMDataset, TEMDataset, IMAGEDataset], search_energy=True):
     """
     GUI for visualisation of the dataset.
-    Shows the navigation image, the summed EDX spectum from all pixels in the dataset, and elemental maps for all features in feature list.
-
-    Includes the ability to search for X-Ray peaks by energy, and add X-Ray lines to the feature list, all within the GUI.
-
-    Tabs for visualisation include:
-    Navigation Image
-    Summed spectra
-    Raw feature maps
-    Binned feature maps (if the raw data has been binned and/or normalised)
-
-    Parameters
-    ----------
-    dataset : SEMDataset, TEMDataset, or IMAGEDataset
-              A SEM/STEM EDX dataset
-    search_energy : bool
-                    Adds the ability to search for X-Ray peaks by energy within the GUI
-
-
     """
-    
-    if search_energy == True:
+
+    if search_energy:
         search_energy_peak()
 
+    # --- Navigation Image ---
     nav_img_out = widgets.Output()
     with nav_img_out:
-        dataset.nav_img.plot(colorbar=False)
-        plt.show()
-        fig, axs = plt.subplots(1, 1)
-        axs.imshow(dataset.nav_img.data, cmap="gray")
-        axs.axis("off")
-        save_fig(fig)
-        plt.close()
+        if dataset.nav_img is not None:
+            dataset.nav_img.plot(colorbar=False)
+            plt.show()
+            fig, axs = plt.subplots(1, 1)
+            axs.imshow(dataset.nav_img.data, cmap="gray")
+            axs.axis("off")
+            save_fig(fig)
+            plt.close()
 
+    # --- Sum Spectrum ---
     sum_spec_out = widgets.Output()
     with sum_spec_out:
         visual.plot_sum_spectrum(dataset.spectra)
 
+    # --- Elemental Maps (Raw) ---
     elemental_map_out = widgets.Output()
-    
-
-    element_list = dataset.feature_list
-
-        
     with elemental_map_out:
+        nav_img = dataset.nav_img_feature if dataset.nav_img_feature is not None else None
         pick_color(
-            visual.plot_intensity_maps, spectra=dataset.spectra, element_list=element_list,include_nav_img=dataset.nav_img_feature
+            visual.plot_intensity_maps,
+            spectra=dataset.spectra,
+            element_list=dataset.feature_list,
+            include_nav_img=nav_img,
         )
-        # fig = visual.plot_intensity_maps(sem.spectra, sem.feature_list)
-        # save_fig(fig)
 
+    # --- Elemental Maps (Binned) ---
+    elemental_map_out_bin = None
     if dataset.spectra_bin is not None:
         elemental_map_out_bin = widgets.Output()
         with elemental_map_out_bin:
+            nav_img_bin = (
+                dataset.nav_img_feature.rebin(dataset.spectra_bin.axes_manager.navigation_shape)
+                if dataset.nav_img_feature is not None
+                else None
+            )
             pick_color(
                 visual.plot_intensity_maps,
                 spectra=dataset.spectra_bin,
                 element_list=dataset.feature_list,
-                include_nav_img=dataset.nav_img_feature.rebin(dataset.spectra_bin.axes_manager.navigation_shape)
+                include_nav_img=nav_img_bin,
             )
-            # fig = visual.plot_intensity_maps(sem.spectra_bin, sem.feature_list)
-            # save_fig(fig)
 
-    default_elements = ""
-    for i, element in enumerate(dataset.feature_list):
-        if i == len(dataset.feature_list) - 1:
-            default_elements += element
-        else:
-            default_elements += element + ", "
+    # --- Feature List Editor ---
+    default_elements = ", ".join(dataset.feature_list)
 
     layout = widgets.Layout(width="400px", height="40px")
     text = widgets.Text(
         value=default_elements,
         placeholder="Type something",
         description="Feature list:",
-        disabled=False,
-        continuous_update=True,
-        # display='flex',
-        # flex_flow='column',
-        align_items="stretch",
         layout=layout,
     )
 
@@ -307,35 +287,43 @@ def view_dataset(dataset:Union[SEMDataset, TEMDataset, IMAGEDataset], search_ene
             feature_list = text.value.replace(" ", "").split(",")
             dataset.set_feature_list(feature_list)
 
+        # Refresh sum spectrum
         sum_spec_out.clear_output()
         with sum_spec_out:
             visual.plot_sum_spectrum(dataset.spectra)
 
+        # Refresh raw elemental maps
         elemental_map_out.clear_output()
         with elemental_map_out:
-            visual.plot_intensity_maps(dataset.spectra, dataset.feature_list,include_nav_img=dataset.nav_img_feature)
+            nav_img = dataset.nav_img_feature if dataset.nav_img_feature is not None else None
+            visual.plot_intensity_maps(dataset.spectra, dataset.feature_list, include_nav_img=nav_img)
 
+        # Refresh binned elemental maps
         if dataset.spectra_bin is not None:
             elemental_map_out_bin.clear_output()
             with elemental_map_out_bin:
-                visual.plot_intensity_maps(dataset.spectra_bin, dataset.feature_list)
+                nav_img_bin = (
+                    dataset.nav_img_feature.rebin(dataset.spectra_bin.axes_manager.navigation_shape)
+                    if dataset.nav_img_feature is not None
+                    else None
+                )
+                visual.plot_intensity_maps(dataset.spectra_bin, dataset.feature_list, include_nav_img=nav_img_bin)
 
     button.on_click(set_to)
-    all_widgets = widgets.HBox([text, button])
-    display(all_widgets)
+    display(widgets.HBox([text, button]))
     display(out)
 
+    # --- Tabs ---
     tab_list = [nav_img_out, sum_spec_out, elemental_map_out]
+    tab_titles = ["Navigation Signal", "Sum spectrum", "Elemental maps (raw)"]
+
     if dataset.spectra_bin is not None:
-        tab_list += [elemental_map_out_bin]
+        tab_list.append(elemental_map_out_bin)
+        tab_titles.append("Elemental maps (binned)")
 
     tab = widgets.Tab(tab_list)
-    tab.set_title(0, "Navigation Signal")
-    tab.set_title(1, "Sum spectrum")
-    tab.set_title(2, "Elemental maps (raw)")
-    i = 2
-    if dataset.spectra_bin is not None:
-        tab.set_title(i + 1, "Elemental maps (binned)")
+    for i, title in enumerate(tab_titles):
+        tab.set_title(i, title)
     display(tab)
 
 def view_im_dataset(im):
@@ -738,8 +726,14 @@ def check_latent_space(ps: PixelSegmenter, ratio_to_be_shown=0.25, show_map=Fals
     y_id = y_id.ravel().reshape(-1, 1)
 
     if type(ps.dataset) not in [IMAGEDataset, PIXLDataset]:
-        nav_img = ps.dataset.nav_img.data if ps.dataset.nav_img_bin is None else ps.dataset.nav_img_bin.data
-        z_id = (nav_img / nav_img.max()).reshape(-1, 1)
+        nav_img = ps.dataset.nav_img_bin if ps.dataset.nav_img_bin is not None else ps.dataset.nav_img
+
+        # Resize nav_img to match spectra dimensions
+        from skimage.transform import resize
+        target_shape = ps.dataset.spectra_bin.data.shape[:2] if ps.dataset.spectra_bin is not None else ps.dataset.spectra.data.shape[:2]
+        nav_img_resized = resize(nav_img.data, target_shape, preserve_range=True, anti_aliasing=True)
+
+        z_id = (nav_img_resized / nav_img_resized.max()).reshape(-1, 1)
     else:
         intensity_map = ps.dataset.intensity_map if ps.dataset.intensity_map_bin is None else ps.dataset.intensity_map_bin 
         z_id = (intensity_map / intensity_map.max()).reshape(-1, 1)
@@ -1464,7 +1458,7 @@ def show_cluster_stats(ps: PixelSegmenter, binary_filter_args={}):
         fig_list = []
         with output:
             for cluster in clusters:
-                df_stats = ps.phase_statics(
+                df_stats = ps.phase_stats(
                     cluster_num=int(cluster.split("_")[1]),
                     element_peaks=ps.peak_list,
                     binary_filter_args=binary_filter_args,
@@ -1734,7 +1728,7 @@ def plot_ternary_composition(ps:PixelSegmenter):
 
 
 from plotly.subplots import make_subplots
-from ipywidgets import Button, Output, ToggleButtons, Dropdown, HBox, VBox, Layout, ColorPicker, HTML
+from ipywidgets import Button, Output, ToggleButtons, Dropdown, HBox, VBox, Layout, ColorPicker, HTML, Box
 from IPython.display import clear_output
 
 from IPython.display import HTML as IPyHTML
@@ -1820,9 +1814,10 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5, n_colours=30):
 
 
 
-    manual_cluster_colors = {}
+    
     original_palette = '%s' % ps.color_palette
     original_labels = ps.labels.copy()
+    
 
     def update_cluster_colors():
         valid_labels = sorted(set(ps.labels.flatten()) - {-1})
@@ -1830,11 +1825,11 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5, n_colours=30):
 
         # Only assign new colors to clusters that do not already have a manually assigned one
         for i, label in enumerate(valid_labels):
-            if label not in manual_cluster_colors:
+            if label not in ps.manual_cluster_colors:
                 color = "#{:02x}{:02x}{:02x}".format(*(int(x * 255) for x in cmap(i / max(1, len(valid_labels) - 1))[:3]))
                 ps.cluster_colors[label] = color
             else:
-                ps.cluster_colors[label] = manual_cluster_colors[label]
+                ps.cluster_colors[label] = ps.manual_cluster_colors[label]
 
     update_cluster_colors()
 
@@ -1847,7 +1842,7 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5, n_colours=30):
         if cid == -1:
             return '#999999'
         return (
-            manual_cluster_colors.get(cid)
+            ps.manual_cluster_colors.get(cid)
             or ps.cluster_colors.get(cid)
             or original_cluster_colors.get(cid, '#cccccc')
         )
@@ -1888,7 +1883,7 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5, n_colours=30):
         with fig.batch_update():
             fig.data = []
 
-            colors = df["cluster"].map(lambda cid: manual_cluster_colors.get(cid, get_color(cid)))
+            colors = df["cluster"].map(lambda cid: ps.manual_cluster_colors.get(cid, get_color(cid)))
             fig.add_trace(go.Scattergl(
                 x=df["x"],
                 y=df["y"],
@@ -2031,7 +2026,7 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5, n_colours=30):
             def do_reset(btn):
                 nonlocal labels
                 selected_clusters.clear()
-                manual_cluster_colors.clear()
+                ps.manual_cluster_colors.clear()
                 selected_point_indices.clear()
                 new_cluster_mode[0] = False
                 ps.color_palette = original_palette
@@ -2064,7 +2059,7 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5, n_colours=30):
         for cluster_id in selected_clusters:
             if cluster_id == -1:
                 continue
-            manual_cluster_colors[cluster_id] = selected_color[0]  # persist manual color
+            ps.manual_cluster_colors[cluster_id] = selected_color[0]  # persist manual color
             ps.cluster_colors[cluster_id] = selected_color[0]
 
         selected_clusters.clear()
@@ -2123,5 +2118,4 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5, n_colours=30):
         confirm_out,
         out
     ]))
-
 
