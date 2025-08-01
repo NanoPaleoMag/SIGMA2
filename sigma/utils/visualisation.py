@@ -115,10 +115,7 @@ def plot_sum_spectrum(spectra, xray_lines=True):
 
     if xray_lines:
         feature_list = spectra.metadata.Sample.xray_lines
-        if np.array(energy_axis).min() <= 0:
-            zero_energy_idx = np.where(np.array(energy_axis).round(2) == 0)[0][0]
-        else:
-            zero_energy_idx = 0
+        zero_energy_idx = np.argmin(np.abs(energy_axis))
         for el in feature_list:
 
             if el == "Navigator":

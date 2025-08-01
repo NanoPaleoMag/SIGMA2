@@ -177,6 +177,7 @@ class PixelSegmenter(object):
     # Data Analysis #--------------------------------------------------------------
     #################
 
+
     def get_binary_map_spectra_profile(
         self,
         cluster_num=1,
@@ -186,6 +187,9 @@ class PixelSegmenter(object):
         keep_fraction=0.13,
         binary_filter_threshold=0.2,
     ):
+        # Determine spatial shape from spectra
+        spectra_shape = self.spectra.data.shape[:2]
+
         # --- Step 1: Get binary mask from soft or hard clustering ---
         if not use_label:
             use_soft_mask = False
@@ -200,25 +204,29 @@ class PixelSegmenter(object):
                     pass
 
             if use_soft_mask:
-                binary_map = np.where(phase > threshold, 1, 0).reshape(self.height, self.width)
-                binary_map_indices = np.where(phase.reshape(self.height, self.width) > threshold)
+                binary_map_flat = (phase > threshold).astype(int)
             else:
-                # fallback to hard labels
                 if hasattr(self, "labels"):
-                    label_mask = (self.labels == cluster_num).astype(int)
+                    binary_map_flat = (self.labels == cluster_num).astype(int)
                 else:
                     raise ValueError(f"Could not find soft or hard cluster mask for cluster {cluster_num}")
-                binary_map = label_mask.reshape(self.height, self.width)
-                binary_map_indices = np.where(binary_map == 1)
         else:
-            binary_map = (self.labels == cluster_num).astype(int).reshape(self.height, self.width)
-            binary_map_indices = np.where(self.labels.reshape(self.height, self.width) == cluster_num)
+            binary_map_flat = (self.labels == cluster_num).astype(int)
+
+        # Reshape flat map to match spectra 2D shape
+        if binary_map_flat.size != np.prod(spectra_shape):
+            raise ValueError(
+                f"Mismatch: label size ({binary_map_flat.size}) doesn't match spectra shape {spectra_shape}"
+            )
+
+        binary_map = binary_map_flat.reshape(spectra_shape)
+        binary_map_indices = np.where(binary_map == 1)
 
         # --- Step 2: Gather feature values at the masked pixel locations ---
-        x_id = binary_map_indices[0].reshape(-1, 1)
-        y_id = binary_map_indices[1].reshape(-1, 1)
-        x_y = np.concatenate([x_id, y_id], axis=1)
-        x_y_indices = tuple(map(tuple, x_y))
+        if binary_map_indices[0].size == 0:
+            raise ValueError(f"No pixels found in cluster {cluster_num}.")
+
+        x_y_indices = tuple(zip(*binary_map_indices))
 
         # --- Step 3: Compute intensity profile from data ---
         if isinstance(self.dataset, (IMAGEDataset, PIXLDataset)):
@@ -235,10 +243,7 @@ class PixelSegmenter(object):
             offset = self.spectra.axes_manager[2].offset
             energy_axis = [((a * scale) + offset) for a in range(0, size)]
 
-        # --- Step 4: Compute mean intensity (instead of raw sum) ---
-        if total_spectra_profiles.shape[0] == 0:
-            raise ValueError(f"No pixels found in cluster {cluster_num}.")
-
+        # --- Step 4: Compute mean intensity ---
         element_intensity_mean = total_spectra_profiles.mean(axis=0)
 
         spectra_profile = pd.DataFrame(
@@ -931,6 +936,14 @@ class PixelSegmenter(object):
                 nav_img = resize(self.dataset.intensity_map, self.dataset.chemical_maps.shape[:2])
             else:
                 nav_img = self.dataset.intensity_map
+                
+            # Match shape if needed
+        if nav_img.shape != binary_map.shape:
+            try:
+                target_shape = binary_map.shape[::-1]  # reverses (y, x) → (x, y)
+                nav_img = (self.dataset.nav_img_bin or self.dataset.nav_img).rebin(target_shape).data
+            except Exception as e:
+                print(f"⚠️ Could not rebin nav_img: {e}")
 
         axs[1].imshow(nav_img, cmap="gray", interpolation="none", alpha=0.9)
         axs[1].scatter(

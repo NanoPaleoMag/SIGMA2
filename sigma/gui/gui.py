@@ -214,88 +214,67 @@ def pick_color(plot_func, *args, **kwargs):
     display(final_box)
 
 
-def view_dataset(dataset:Union[SEMDataset, TEMDataset, IMAGEDataset], search_energy=True):
+def view_dataset(dataset: Union[SEMDataset, TEMDataset, IMAGEDataset], search_energy=True):
     """
     GUI for visualisation of the dataset.
-    Shows the navigation image, the summed EDX spectum from all pixels in the dataset, and elemental maps for all features in feature list.
-
-    Includes the ability to search for X-Ray peaks by energy, and add X-Ray lines to the feature list, all within the GUI.
-
-    Tabs for visualisation include:
-    Navigation Image
-    Summed spectra
-    Raw feature maps
-    Binned feature maps (if the raw data has been binned and/or normalised)
-
-    Parameters
-    ----------
-    dataset : SEMDataset, TEMDataset, or IMAGEDataset
-              A SEM/STEM EDX dataset
-    search_energy : bool
-                    Adds the ability to search for X-Ray peaks by energy within the GUI
-
-
     """
-    
-    if search_energy == True:
+
+    if search_energy:
         search_energy_peak()
 
+    # --- Navigation Image ---
     nav_img_out = widgets.Output()
     with nav_img_out:
-        dataset.nav_img.plot(colorbar=False)
-        plt.show()
-        fig, axs = plt.subplots(1, 1)
-        axs.imshow(dataset.nav_img.data, cmap="gray")
-        axs.axis("off")
-        save_fig(fig)
-        plt.close()
+        if dataset.nav_img is not None:
+            dataset.nav_img.plot(colorbar=False)
+            plt.show()
+            fig, axs = plt.subplots(1, 1)
+            axs.imshow(dataset.nav_img.data, cmap="gray")
+            axs.axis("off")
+            save_fig(fig)
+            plt.close()
 
+    # --- Sum Spectrum ---
     sum_spec_out = widgets.Output()
     with sum_spec_out:
         visual.plot_sum_spectrum(dataset.spectra)
 
+    # --- Elemental Maps (Raw) ---
     elemental_map_out = widgets.Output()
-    
-
-    element_list = dataset.feature_list
-
-        
     with elemental_map_out:
+        nav_img = dataset.nav_img_feature if dataset.nav_img_feature is not None else None
         pick_color(
-            visual.plot_intensity_maps, spectra=dataset.spectra, element_list=element_list,include_nav_img=dataset.nav_img_feature
+            visual.plot_intensity_maps,
+            spectra=dataset.spectra,
+            element_list=dataset.feature_list,
+            include_nav_img=nav_img,
         )
-        # fig = visual.plot_intensity_maps(sem.spectra, sem.feature_list)
-        # save_fig(fig)
 
+    # --- Elemental Maps (Binned) ---
+    elemental_map_out_bin = None
     if dataset.spectra_bin is not None:
         elemental_map_out_bin = widgets.Output()
         with elemental_map_out_bin:
+            nav_img_bin = (
+                dataset.nav_img_feature.rebin(dataset.spectra_bin.axes_manager.navigation_shape)
+                if dataset.nav_img_feature is not None
+                else None
+            )
             pick_color(
                 visual.plot_intensity_maps,
                 spectra=dataset.spectra_bin,
                 element_list=dataset.feature_list,
-                include_nav_img=dataset.nav_img_feature.rebin(dataset.spectra_bin.axes_manager.navigation_shape)
+                include_nav_img=nav_img_bin,
             )
-            # fig = visual.plot_intensity_maps(sem.spectra_bin, sem.feature_list)
-            # save_fig(fig)
 
-    default_elements = ""
-    for i, element in enumerate(dataset.feature_list):
-        if i == len(dataset.feature_list) - 1:
-            default_elements += element
-        else:
-            default_elements += element + ", "
+    # --- Feature List Editor ---
+    default_elements = ", ".join(dataset.feature_list)
 
     layout = widgets.Layout(width="400px", height="40px")
     text = widgets.Text(
         value=default_elements,
         placeholder="Type something",
         description="Feature list:",
-        disabled=False,
-        continuous_update=True,
-        # display='flex',
-        # flex_flow='column',
-        align_items="stretch",
         layout=layout,
     )
 
@@ -308,35 +287,43 @@ def view_dataset(dataset:Union[SEMDataset, TEMDataset, IMAGEDataset], search_ene
             feature_list = text.value.replace(" ", "").split(",")
             dataset.set_feature_list(feature_list)
 
+        # Refresh sum spectrum
         sum_spec_out.clear_output()
         with sum_spec_out:
             visual.plot_sum_spectrum(dataset.spectra)
 
+        # Refresh raw elemental maps
         elemental_map_out.clear_output()
         with elemental_map_out:
-            visual.plot_intensity_maps(dataset.spectra, dataset.feature_list,include_nav_img=dataset.nav_img_feature)
+            nav_img = dataset.nav_img_feature if dataset.nav_img_feature is not None else None
+            visual.plot_intensity_maps(dataset.spectra, dataset.feature_list, include_nav_img=nav_img)
 
+        # Refresh binned elemental maps
         if dataset.spectra_bin is not None:
             elemental_map_out_bin.clear_output()
             with elemental_map_out_bin:
-                visual.plot_intensity_maps(dataset.spectra_bin, dataset.feature_list)
+                nav_img_bin = (
+                    dataset.nav_img_feature.rebin(dataset.spectra_bin.axes_manager.navigation_shape)
+                    if dataset.nav_img_feature is not None
+                    else None
+                )
+                visual.plot_intensity_maps(dataset.spectra_bin, dataset.feature_list, include_nav_img=nav_img_bin)
 
     button.on_click(set_to)
-    all_widgets = widgets.HBox([text, button])
-    display(all_widgets)
+    display(widgets.HBox([text, button]))
     display(out)
 
+    # --- Tabs ---
     tab_list = [nav_img_out, sum_spec_out, elemental_map_out]
+    tab_titles = ["Navigation Signal", "Sum spectrum", "Elemental maps (raw)"]
+
     if dataset.spectra_bin is not None:
-        tab_list += [elemental_map_out_bin]
+        tab_list.append(elemental_map_out_bin)
+        tab_titles.append("Elemental maps (binned)")
 
     tab = widgets.Tab(tab_list)
-    tab.set_title(0, "Navigation Signal")
-    tab.set_title(1, "Sum spectrum")
-    tab.set_title(2, "Elemental maps (raw)")
-    i = 2
-    if dataset.spectra_bin is not None:
-        tab.set_title(i + 1, "Elemental maps (binned)")
+    for i, title in enumerate(tab_titles):
+        tab.set_title(i, title)
     display(tab)
 
 def view_im_dataset(im):
@@ -739,8 +726,14 @@ def check_latent_space(ps: PixelSegmenter, ratio_to_be_shown=0.25, show_map=Fals
     y_id = y_id.ravel().reshape(-1, 1)
 
     if type(ps.dataset) not in [IMAGEDataset, PIXLDataset]:
-        nav_img = ps.dataset.nav_img.data if ps.dataset.nav_img_bin is None else ps.dataset.nav_img_bin.data
-        z_id = (nav_img / nav_img.max()).reshape(-1, 1)
+        nav_img = ps.dataset.nav_img_bin if ps.dataset.nav_img_bin is not None else ps.dataset.nav_img
+
+        # Resize nav_img to match spectra dimensions
+        from skimage.transform import resize
+        target_shape = ps.dataset.spectra_bin.data.shape[:2] if ps.dataset.spectra_bin is not None else ps.dataset.spectra.data.shape[:2]
+        nav_img_resized = resize(nav_img.data, target_shape, preserve_range=True, anti_aliasing=True)
+
+        z_id = (nav_img_resized / nav_img_resized.max()).reshape(-1, 1)
     else:
         intensity_map = ps.dataset.intensity_map if ps.dataset.intensity_map_bin is None else ps.dataset.intensity_map_bin 
         z_id = (intensity_map / intensity_map.max()).reshape(-1, 1)
@@ -2126,34 +2119,3 @@ def interactive_latent_plot(ps, ratio_to_be_shown=0.5, n_colours=30):
         out
     ]))
 
-
-def view_latent_simple(latent):
-    
-    """
-    simple function to view latent space before clustering, to determine if UMAP parameters are sensible
-    latent: 2D array of points
-    """
-    
-    if latent.shape[1] != 2:
-        raise ValueError("latent must be a 2D array with shape (n_samples, 2)")
-
-    out = Output()
-
-    out.clear_output()
-    
-    out_box = Box([out], layout=Layout(flex="1 1 auto", width="auto"))
-
-    with out:
-        fig, ax = plt.subplots(figsize=(8, 6))
-        ax.scatter(latent[:, 0], latent[:, 1], s=10, alpha=0.8)
-        ax.set_title("Latent Space Scatter")
-        ax.set_xlabel("Dim 1")
-        ax.set_ylabel("Dim 2")
-        ax.grid(True)
-        plt.tight_layout()
-        plt.show()
-        save_fig(fig)
-
-    # Layout
-
-    display(VBox([out_box]))
