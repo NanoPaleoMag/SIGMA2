@@ -13,6 +13,7 @@ class TEMDataset(BaseDataset):
         super().__init__(file_path)
         
         self.nav_img_feature = None # setting this as None, so it can be later loaded
+        self.base_dataset = hs.load(file_path)
         
         if type(self.base_dataset) == Signal2D:
             self.stem = self.base_dataset
