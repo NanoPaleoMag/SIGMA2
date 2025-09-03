@@ -1004,6 +1004,41 @@ def show_cluster_distribution(ps: PixelSegmenter, **kwargs):
 #need a helper function to aid with plotting in view_phase_map
 import re
 
+import matplotlib.pyplot as plt
+
+def show_projection(latent, labels=None, cmap="tab10", s=10, alpha=0.7):
+    """
+    Visualize a 2D latent space projection.
+
+    Parameters
+    ----------
+    latent : np.ndarray
+        The 2D projection (shape: [n_samples, 2]).
+    labels : array-like, optional
+        Class labels for coloring the points. If None, all points are same color.
+    cmap : str, optional
+        Matplotlib colormap for labels.
+    s : int, optional
+        Marker size for scatter points.
+    alpha : float, optional
+        Transparency for scatter points.
+    """
+    plt.figure(figsize=(7, 6))
+    if labels is None:
+        plt.scatter(latent[:, 0], latent[:, 1], s=s, alpha=alpha)
+    else:
+        scatter = plt.scatter(
+            latent[:, 0], latent[:, 1], c=labels, cmap=cmap, s=s, alpha=alpha
+        )
+        plt.colorbar(scatter, label="Labels")
+
+    plt.xlabel("Dimension-1")
+    plt.ylabel("Dimension-2")
+    plt.title("Latent Space Projection")
+    plt.tight_layout()
+    plt.show()
+
+
 def parse_rgb_string(s):
     """Convert 'rgb(r, g, b)' or 'rgba(r, g, b, a)' string into RGB tuple (0-1 range)."""
     match = re.match(r"rgba?\(([\d\s.,]+)\)", s)
