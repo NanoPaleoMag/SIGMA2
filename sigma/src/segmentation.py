@@ -33,6 +33,10 @@ import os
 
 from tifffile import imsave
 
+from sklearn.utils.extmath import randomized_svd
+
+
+
 
 class PixelSegmenter(object):
     def __init__(
@@ -1485,3 +1489,168 @@ class PixelSegmenter(object):
             imsave(out_path, binary_mask * 255)
 
         print(f"Exported {len(cluster_ids)} cluster mask(s) to '{output_dir}'.")
+        
+        
+    def get_unmixed_spectra_profile_init_guess(
+        self,
+        clusters_to_be_calculated="All",
+        n_components="All",
+        normalised=True,
+        method="NMF",
+        method_args=None,
+        init_endmembers=None,   # NEW: list of cluster IDs or array-like (k, n_features)
+        fill_missing_with="nndsvd",  # how to fill remaining components if seeds < k
+    ):
+        """
+        Returns:
+            weights_df  : (clusters x components) nonnegative weights (W)
+            components_df: (features x components) nonnegative endmembers (H^T)
+        Notes:
+            - Input X the model sees is (n_samples=clusters, n_features)
+            - components_df columns are cpnt_0..cpnt_{k-1}, each a feature-length endmember
+            - If you pass init_endmembers, we use init='custom' with (W0, H0)
+              * If init_endmembers is a list of cluster IDs, each chosen cluster's mean spectrum
+                seeds one component.
+              * If it is an array-like, it must be (k, n_features).
+        """
+        assert method == "NMF", "Only NMF is supported currently."
+        if method_args is None:
+            method_args = {}
+
+        # Get all spectra profiles (clusters x features) and cluster IDs
+        spectra_profiles, cluster_ids = self.get_all_spectra_profile(normalised)  # (C x F)
+
+        # DataFrame: features x clusters (columns labeled by cluster IDs)
+        spectra_profiles_ = pd.DataFrame(
+            spectra_profiles.T,  # (F x C)
+            columns=cluster_ids,
+        )
+
+        # Subset clusters if requested
+        if clusters_to_be_calculated != "All":
+            spectra_profiles_ = spectra_profiles_[clusters_to_be_calculated]
+
+        # Determine k
+        if n_components == "All":
+            n_components = spectra_profiles_.shape[1]  # <= number of clusters selected
+
+        # Build X as (clusters x features)
+        X = spectra_profiles_.to_numpy().T  # (n_samples=C_sel, n_features=F)
+        n_samples, n_features = X.shape
+        k = int(n_components)
+
+        # --- Optional custom initialization ---
+        use_custom_init = init_endmembers is not None
+        W0 = None
+        H0 = None
+
+        if use_custom_init:
+            # 1) Build H0 (k x n_features)
+            if isinstance(init_endmembers, (list, tuple, pd.Index)):
+                # Seed from cluster IDs: each chosen cluster's spectrum is a row in H0
+                seed_cols = list(init_endmembers)
+                # Validate all seeds exist in the current subset
+                missing = [c for c in seed_cols if c not in spectra_profiles_.columns]
+                if missing:
+                    raise ValueError(f"Seed clusters not present in current selection: {missing}")
+
+                seed_matrix = spectra_profiles_[seed_cols].to_numpy().T  # (#seeds x F)
+
+            else:
+                # Assume array-like
+                seed_matrix = np.asarray(init_endmembers, dtype=float)
+                if seed_matrix.ndim != 2 or seed_matrix.shape[1] != n_features:
+                    raise ValueError(
+                        f"init_endmembers must have shape (k, n_features={n_features}); "
+                        f"got {seed_matrix.shape}"
+                    )
+                if np.any(seed_matrix < 0):
+                    raise ValueError("init_endmembers must be nonnegative.")
+
+            # Normalize seeds a bit to avoid scale pathologies (optional, L2 norm)
+            def _safe_norm_rows(A, eps=1e-12):
+                norms = np.linalg.norm(A, axis=1, keepdims=True)
+                norms = np.maximum(norms, eps)
+                return A / norms
+
+            seeds = _safe_norm_rows(seed_matrix)
+
+            if seeds.shape[0] > k:
+                # If user gave more seeds than k, keep the first k
+                seeds = seeds[:k, :]
+
+            if seeds.shape[0] < k:
+                # Need to fill remaining rows to reach k
+                r = k - seeds.shape[0]
+                if fill_missing_with == "zeros":
+                    filler = np.full((r, n_features), 1e-6)
+                elif fill_missing_with in ("nndsvd", "nndsvda", "nndsvdar"):
+                    # Use a quick NNDSVD-style filler via randomized SVD
+                    # (lightweight approximation; good enough for init)
+                    # X is (n_samples x n_features). We want k-r extra components.
+                    # We'll take r additional singular vectors beyond the seed count.
+                    # Compute SVD rank = min(k, n_samples, n_features)
+                    rank = min(k, n_samples, n_features)
+                    U, S, Vt = randomized_svd(X, n_components=rank, random_state=method_args.get("random_state", 0))
+                    # Take the last r right-singular vectors as extra components
+                    # Ensure nonnegativity by splitting positive parts
+                    extra = []
+                    take = min(r, Vt.shape[0])
+                    for i in range(rank - take, rank):
+                        vp = np.maximum(Vt[i, :], 0)
+                        if vp.sum() < 1e-12:
+                            vp = np.abs(Vt[i, :])
+                        extra.append(vp)
+                    if len(extra) < r:
+                        # Pad if rank < r
+                        extra.extend([np.full(n_features, 1e-6) for _ in range(r - len(extra))])
+                    filler = _safe_norm_rows(np.vstack(extra))
+                else:
+                    raise ValueError("fill_missing_with must be one of {'nndsvd','nndsvda','nndsvdar','zeros'}")
+
+                H0 = np.vstack([seeds, filler])
+            else:
+                H0 = seeds
+
+            # 2) Build W0 (n_samples x k) — crude but nonnegative, consistent with H0
+            # Heuristic: project X onto H0 by nonnegative clipping
+            # W0 ≈ X @ H0^T (scaled), then clip to ≥ 0
+            W0 = X @ H0.T
+            W0 = np.maximum(W0, 1e-12)
+
+            # Optionally re-scale columns for balance
+            col_sums = H0.sum(axis=1, keepdims=True)
+            col_sums = np.maximum(col_sums, 1e-12)
+            W0 = W0 / col_sums.T
+
+            method_args = {**method_args, "init": "custom"}
+
+        else:
+            # Use a robust default init if user didn't provide seeds
+            method_args = {"init": method_args.get("init", "nndsvda"), **method_args}
+
+        # Fit NMF
+        model = NMF(n_components=k, **method_args)
+        if use_custom_init:
+            W = model.fit_transform(X, W=W0, H=H0)  # shapes: (C x k), updates W,H
+        else:
+            W = model.fit_transform(X)
+
+        H = model.components_  # (k x F)
+        self.NMF_recon_error = model.reconstruction_err_
+
+        # Build tidy DataFrames
+        cluster_labels = [f"cluster_{i}" for i in spectra_profiles_.columns]
+        weights_df = pd.DataFrame(
+            W.round(3),
+            columns=[f"w_{i}" for i in range(k)],
+            index=cluster_labels,
+        )
+        components_df = pd.DataFrame(
+            H.T.round(3),  # (F x k)
+            columns=[f"cpnt_{i}" for i in range(k)],
+            index=spectra_profiles_.index,  # feature axis
+        )
+
+        return weights_df, components_df
+

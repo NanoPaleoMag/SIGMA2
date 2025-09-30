@@ -842,6 +842,8 @@ from scipy.optimize import linear_sum_assignment
 
 
 def match_peaks(measured, reference, tolerance=0.2):
+    
+  
     # Full cost matrix
     cost_matrix = np.abs(measured[:, np.newaxis] - reference[np.newaxis, :])
 
@@ -874,3 +876,344 @@ def match_peaks(measured, reference, tolerance=0.2):
     matched_reference = reference[valid_reference_idx][col_ind[valid]]
 
     return matched_measured, matched_reference
+
+# ---- offline-friendly EMD loader for HS 1.7 with pre-warmed HS 2.x bridge ----
+# Keep this file in your HS 1.7 environment.
+import os, sys, json, shutil, subprocess, tempfile, pathlib, platform, time
+from typing import Tuple, Optional, List
+
+import numpy as np
+import h5py
+import hyperspy.api as hs
+
+# ---------------- helpers: quick pruned detection ----------------
+def _emd_si_is_pruned(emd_path: str) -> bool:
+    with h5py.File(emd_path, "r") as f:
+        if "Data/SpectrumImage" not in f:
+            return False
+        for _, grp in f["Data/SpectrumImage"].items():
+            if not isinstance(grp, h5py.Group) or "Data" not in grp:
+                continue
+            ds = grp["Data"]
+            shp = tuple(ds.shape)
+            # hallmark: smallish uint8 blob, no Dimensions or mismatched dims
+            if ds.dtype == np.uint8 and (len(shp) in (1,2)) and (len(shp)==1 or shp[-1]==1):
+                if "Dimension" not in grp:
+                    return True
+                try:
+                    dims = grp["Dimension"]
+                    idxs = [int(k) for k in dims.keys() if k.isdigit()]
+                    lens = []
+                    for i in sorted(idxs):
+                        d = dims[str(i)]
+                        if "Length" not in d: break
+                        lens.append(int(d["Length"][()]))
+                    if lens and int(np.prod(lens)) == int(np.prod(shp)):
+                        return False
+                except Exception:
+                    pass
+                return True
+    return False
+
+# -------------- HS 1.7 direct loader for non-pruned files --------------
+def _load_with_hs17_direct(emd_path: str):
+    try:
+        objs = hs.load(emd_path, lazy=False)
+    except Exception:
+        objs = []
+    if not isinstance(objs, (list, tuple)):
+        objs = [objs] if objs else []
+    return objs
+
+# -------------- private venv manager (bridge) --------------
+def _cache_root() -> pathlib.Path:
+    base = os.getenv("XDG_CACHE_HOME") or os.path.join(pathlib.Path.home(), ".cache")
+    return pathlib.Path(base) / "hs2_bridge"
+
+def _venv_dir_for_py() -> pathlib.Path:
+    return _cache_root() / f"venv_py{sys.version_info.major}{sys.version_info.minor}"
+
+def _venv_python(venv_dir: pathlib.Path) -> pathlib.Path:
+    return venv_dir / ("Scripts/python.exe" if platform.system().lower().startswith("win") else "bin/python")
+
+# ---- Bridge venv maintenance: ensure required packages even if venv already exists ----
+import os, sys, subprocess, platform, pathlib
+
+def _cache_root() -> pathlib.Path:
+    base = os.getenv("XDG_CACHE_HOME") or os.path.join(pathlib.Path.home(), ".cache")
+    return pathlib.Path(base) / "hs2_bridge"
+
+def _venv_dir_for_py() -> pathlib.Path:
+    return _cache_root() / f"venv_py{sys.version_info.major}{sys.version_info.minor}"
+
+def _venv_python(venv_dir: pathlib.Path) -> pathlib.Path:
+    return venv_dir / ("Scripts/python.exe" if platform.system().lower().startswith("win") else "bin/python")
+
+def _pip_run(py_exe: pathlib.Path, args, env=None):
+    cmd = [str(py_exe), "-m", "pip"] + list(args)
+    return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+
+def _bridge_has(py_exe: pathlib.Path, pkg: str) -> bool:
+    out = _pip_run(py_exe, ["show", pkg])
+    return out.returncode == 0
+
+def _ensure_bridge_packages(py_exe: pathlib.Path, packages, wheelhouse=None, offline=False):
+    # build pip install command
+    base = []
+    if wheelhouse:
+        wheelhouse = str(pathlib.Path(wheelhouse).resolve())
+        if offline:
+            base += ["--no-index", f"--find-links={wheelhouse}"]
+        else:
+            base += [f"--find-links={wheelhouse}"]  # prefer local, allow internet
+    elif offline:
+        raise RuntimeError("offline=True but no wheelhouse provided")
+
+    missing = [p for p in packages if not _bridge_has(py_exe, p.split("==")[0].split(">=")[0])]
+    if not missing:
+        return
+    # upgrade pip first (safe even offline if wheel in wheelhouse)
+    _pip_run(py_exe, ["install", "--upgrade", "pip", "setuptools", "wheel"] + ([] if not base else base))
+    # install missing
+    res = _pip_run(py_exe, ["install"] + (base if base else []) + missing)
+    if res.returncode != 0:
+        raise RuntimeError(f"[hs2-bridge] failed to install {missing}:\n{res.stdout}")
+
+def prime_hs2_bridge(wheelhouse: str | None = None, offline: bool = False,
+                     quiet: bool = False, force_recreate: bool = False) -> pathlib.Path:
+    """
+    Ensure the private venv exists AND has required packages.
+    Returns the path to venv's python.
+    - wheelhouse: folder with pre-downloaded wheels (for offline)
+    - offline: install only from wheelhouse if True
+    - force_recreate: delete and recreate the venv
+    """
+    import venv as _venv
+
+    venv_dir = _venv_dir_for_py()
+    py = _venv_python(venv_dir)
+
+    if force_recreate and venv_dir.exists():
+        if not quiet: print(f"[hs2-bridge] removing venv: {venv_dir}")
+        import shutil; shutil.rmtree(venv_dir, ignore_errors=True)
+
+    if not py.exists():
+        if not quiet: print(f"[hs2-bridge] creating venv at {venv_dir}")
+        venv_dir.parent.mkdir(parents=True, exist_ok=True)
+        _venv.EnvBuilder(with_pip=True, clear=True).create(str(venv_dir))
+        # minimal bootstrap
+        _pip_run(py, ["install", "--upgrade", "pip", "setuptools", "wheel"])
+
+    else:
+        if not quiet: print(f"[hs2-bridge] using existing venv: {venv_dir}")
+
+    # Always ensure required packages (even on existing venv)
+    required = ["hyperspy>=2", "rosettasciio", "sparse", "numba"]
+    _ensure_bridge_packages(py, required, wheelhouse=wheelhouse, offline=offline)
+
+    return py
+
+# If you also call the converter, keep the backend-safe env when spawning it:
+def _convert_with_hs2(emd_path: str, out_dir: pathlib.Path, py_bridge: pathlib.Path) -> list:
+    _CONVERTER_SNIPPET = r"""
+import os
+os.environ.setdefault("MPLBACKEND","Agg")
+os.environ.setdefault("QT_QPA_PLATFORM","offscreen")
+import sys, json, pathlib
+import hyperspy.api as hs
+
+in_path = pathlib.Path(sys.argv[1]).resolve()
+out_dir = pathlib.Path(sys.argv[2]).resolve()
+out_dir.mkdir(parents=True, exist_ok=True)
+
+objs = hs.load(str(in_path), lazy=False)
+if not isinstance(objs, (list, tuple)):
+    objs = [objs]
+out = []
+for i, s in enumerate(objs):
+    title = (s.metadata.General.title or f"signal_{i}").replace("/", "-")
+    dst = out_dir / f"{i:02d}_{title}.hspy"
+    s.save(str(dst), overwrite=True)
+    out.append(dict(index=i, title=str(s.metadata.General.title or ""), path=str(dst)))
+print(json.dumps(out))
+"""
+    conv_py = out_dir / "hs2_convert.py"
+    conv_py.write_text(_CONVERTER_SNIPPET, encoding="utf-8")
+    cmd = [str(py_bridge), str(conv_py), str(pathlib.Path(emd_path).resolve()), str(out_dir)]
+    env = os.environ.copy()
+    env["MPLBACKEND"] = "Agg"
+    env.setdefault("QT_QPA_PLATFORM", "offscreen")
+    env.pop("PYTHONPATH", None)
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+    if proc.returncode != 0:
+        raise RuntimeError(f"[hs2-bridge] converter failed:\n{proc.stdout}")
+    # parse last JSON line
+    lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
+    import json
+    for ln in reversed(lines):
+        if ln.lstrip().startswith(("{","[")):
+            return json.loads(ln)
+    raise RuntimeError(f"[hs2-bridge] unexpected converter output:\n{proc.stdout}")
+
+# Helper to pre-download wheels (run once online if you want a local wheelhouse)
+def download_bridge_wheels(target_dir: str):
+    """
+    Download wheels for hyperspy>=2 and rosettasciio (and dependencies) for your platform & Python.
+    Run this ONCE while online; later you can prime the bridge with offline=True.
+    """
+    tgt = pathlib.Path(target_dir).resolve()
+    tgt.mkdir(parents=True, exist_ok=True)
+    cmd = [sys.executable, "-m", "pip", "download", "--dest", str(tgt), "hyperspy>=2", "rosettasciio"]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"[wheelhouse] download failed:\n{proc.stdout}")
+    print(f"[wheelhouse] wheels saved to {tgt}")
+
+# -------------- converter subprocess (uses the bridge) --------------
+_CONVERTER_SNIPPET = r"""
+import os
+# Force headless matplotlib so Hyperspy can import cleanly in a non-notebook subprocess
+os.environ.setdefault("MPLBACKEND", "Agg")
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# Optional: isolate matplotlib config (avoids permission issues on locked systems)
+os.environ.setdefault("MPLCONFIGDIR", str((__import__('pathlib').Path.cwd() / 'mplconfig').resolve()))
+
+import sys, json, pathlib
+import hyperspy.api as hs
+
+in_path = pathlib.Path(sys.argv[1]).resolve()
+out_dir = pathlib.Path(sys.argv[2]).resolve()
+out_dir.mkdir(parents=True, exist_ok=True)
+
+objs = hs.load(str(in_path), lazy=False)
+if not isinstance(objs, (list, tuple)):
+    objs = [objs]
+
+out = []
+for i, s in enumerate(objs):
+    title = (s.metadata.General.title or f"signal_{i}").replace("/", "-")
+    dst = out_dir / f"{i:02d}_{title}.hspy"
+    s.save(str(dst), overwrite=True)
+    out.append(dict(index=i, title=str(s.metadata.General.title or ""), path=str(dst)))
+print(json.dumps(out))
+"""
+
+def _convert_with_hs2(emd_path: str, out_dir: pathlib.Path, py_bridge: pathlib.Path) -> list:
+    conv_py = out_dir / "hs2_convert.py"
+    conv_py.write_text(_CONVERTER_SNIPPET, encoding="utf-8")
+    cmd = [str(py_bridge), str(conv_py), str(pathlib.Path(emd_path).resolve()), str(out_dir)]
+
+    # Clean environment for the subprocess so notebook-specific backends don't leak in
+    env = os.environ.copy()
+    env["MPLBACKEND"] = "Agg"
+    env.setdefault("QT_QPA_PLATFORM", "offscreen")
+    env.pop("PYTHONPATH", None)  # avoid pulling in the parent env’s site-packages by accident
+
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+    if proc.returncode != 0:
+        raise RuntimeError(f"[hs2-bridge] converter failed:\n{proc.stdout}")
+
+    # Find the JSON line robustly (ignore any print noise)
+    lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
+    for ln in reversed(lines):
+        if ln.startswith("{") or ln.startswith("["):
+            try:
+                return json.loads(ln)
+            except Exception:
+                break
+    raise RuntimeError(f"[hs2-bridge] unexpected converter output:\n{proc.stdout}")
+
+# -------------- cache helpers --------------
+def _default_cache_for(emd_path: str) -> pathlib.Path:
+    # sidecar cache folder next to the .emd (e.g., myfile.emd.cache/)
+    p = pathlib.Path(emd_path).resolve()
+    return p.with_suffix(p.suffix + ".cache")
+
+def _is_cache_fresh(emd_path: str, cache_dir: pathlib.Path) -> bool:
+    if not cache_dir.exists(): return False
+    emd_mtime = pathlib.Path(emd_path).stat().st_mtime
+    marker = cache_dir / ".src_mtime"
+    if not marker.exists(): return False
+    try:
+        saved = float(marker.read_text().strip())
+    except Exception:
+        return False
+    return abs(saved - emd_mtime) < 1e-6
+
+def _mark_cache(emd_path: str, cache_dir: pathlib.Path):
+    emd_mtime = pathlib.Path(emd_path).stat().st_mtime
+    (cache_dir / ".src_mtime").write_text(str(emd_mtime), encoding="utf-8")
+
+def _load_hspy_folder(cache_dir: pathlib.Path) -> List[hs.signals.BaseSignal]:
+    out = []
+    for p in sorted(cache_dir.glob("*.hspy")):
+        obj = hs.load(str(p), lazy=False)
+        if isinstance(obj, list):
+            out.extend(obj)
+        else:
+            out.append(obj)
+    return out
+
+# -------------- public API --------------
+def load_emd_any(emd_path: str,
+                 prefer_bse_order=("HAADF","ADF","DF"),
+                 wheelhouse: Optional[str] = None,
+                 offline_bridge: bool = False,
+                 use_cache: bool = True,
+                 cache_dir: Optional[str] = None) -> Tuple[hs.signals.Signal2D, hs.signals.BaseSignal]:
+    """
+    One-liner loader that returns (BSE image, EDS spectrum image) using HS 1.7.
+    - If EMD is pruned, uses a pre-warmed HS 2.x bridge (can be fully offline if primed).
+    - Caches converted .hspy files to avoid re-conversion.
+    Params:
+      wheelhouse: path with pre-downloaded wheels (for offline bridge priming)
+      offline_bridge: True to force bridge install from wheelhouse only
+      use_cache: reuse .hspy cache if up-to-date
+      cache_dir: custom cache folder; defaults to '<file>.emd.cache' beside the .emd
+    """
+    emd_path = os.path.abspath(emd_path)
+    cache_dir_path = pathlib.Path(cache_dir) if cache_dir else _default_cache_for(emd_path)
+
+    # 1) Try HS 1.7 directly
+    objs = _load_with_hs17_direct(emd_path)
+
+    def _pick(objs_list):
+        bse, si = None, None
+        for s in objs_list:
+            if getattr(s.axes_manager, "signal_dimension", 0) == 2:
+                title = (s.metadata.General.title or "").upper()
+                rank = {name: i for i, name in enumerate(prefer_bse_order)}
+                for key in rank:
+                    if key in title and bse is None:
+                        bse = s; break
+                if bse is None: bse = s
+            if getattr(s.axes_manager, "signal_dimension", 0) == 1 and getattr(s.data, "ndim", 0) == 3:
+                if getattr(s.metadata.Signal, "signal_type", "") in ("EDS_TEM","EDS_SEM","EDS"):
+                    si = s
+        return bse, si
+
+    bse, si = _pick(objs)
+    if bse is not None and si is not None:
+        return bse, si
+
+    # 2) If pruned or SI missing, use cache/bridge
+    if use_cache and _is_cache_fresh(emd_path, cache_dir_path):
+        loaded = _load_hspy_folder(cache_dir_path)
+        bse2, si2 = _pick(loaded)
+        if bse2 and si2:
+            return bse2, si2
+
+    # If file is pruned or we just couldn't get SI: convert via bridge
+    if _emd_si_is_pruned(emd_path) or si is None:
+        cache_dir_path.mkdir(parents=True, exist_ok=True)
+        py_bridge = prime_hs2_bridge(wheelhouse=wheelhouse, offline=offline_bridge, quiet=False)
+        converted = _convert_with_hs2(emd_path, cache_dir_path, py_bridge)
+        _mark_cache(emd_path, cache_dir_path)
+        loaded = _load_hspy_folder(cache_dir_path)
+        bse2, si2 = _pick(loaded)
+        if bse is None: bse = bse2
+        if si is None:  si = si2
+
+    if bse is None or si is None:
+        raise RuntimeError("Could not obtain both BSE and EDS SI (even via bridge/cache).")
+    return bse, si
