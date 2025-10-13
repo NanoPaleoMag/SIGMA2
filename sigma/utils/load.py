@@ -1026,14 +1026,23 @@ in_path = pathlib.Path(sys.argv[1]).resolve()
 out_dir = pathlib.Path(sys.argv[2]).resolve()
 out_dir.mkdir(parents=True, exist_ok=True)
 
-objs = hs.load(str(in_path), lazy=False)
+# Load lazily so we don't balloon RAM during conversion
+objs = hs.load(str(in_path), lazy=True)
 if not isinstance(objs, (list, tuple)):
     objs = [objs]
+
 out = []
 for i, s in enumerate(objs):
     title = (s.metadata.General.title or f"signal_{i}").replace("/", "-")
     dst = out_dir / f"{i:02d}_{title}.hspy"
-    s.save(str(dst), overwrite=True)
+    # Save with chunking & compression; HS 1.7 can read this and also lazily reopen
+    s.save(
+        str(dst),
+        overwrite=True,
+        compression="gzip",      # or "lzf" for faster/larger
+        chunks=True              # let HS pick reasonable chunk shapes
+        # you can also do: chunk_shape=(128,128,256) for SI (ny,nx,energy)
+    )
     out.append(dict(index=i, title=str(s.metadata.General.title or ""), path=str(dst)))
 print(json.dumps(out))
 """
@@ -1144,10 +1153,10 @@ def _mark_cache(emd_path: str, cache_dir: pathlib.Path):
     emd_mtime = pathlib.Path(emd_path).stat().st_mtime
     (cache_dir / ".src_mtime").write_text(str(emd_mtime), encoding="utf-8")
 
-def _load_hspy_folder(cache_dir: pathlib.Path) -> List[hs.signals.BaseSignal]:
+def _load_hspy_folder(cache_dir: pathlib.Path):
     out = []
     for p in sorted(cache_dir.glob("*.hspy")):
-        obj = hs.load(str(p), lazy=False)
+        obj = hs.load(str(p), lazy=True)   # <-- lazy=True here
         if isinstance(obj, list):
             out.extend(obj)
         else:

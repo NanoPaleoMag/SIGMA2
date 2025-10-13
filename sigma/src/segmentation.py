@@ -1510,10 +1510,29 @@ class PixelSegmenter(object):
         method_args = {} if method_args is None else dict(method_args)
 
         # --- Data: X = clusters x features
-        spectra_profiles = self.get_all_spectra_profile(normalised)  # (C x F)
-        spectra_profiles_ = pd.DataFrame(
-            spectra_profiles.T, columns=range(spectra_profiles.shape[0])
-        )  # (F x C) with integer cluster columns
+        # get_all_spectra_profile returns (array(C x F), cluster_ids)
+        spectra_result = self.get_all_spectra_profile(normalised)
+
+        # accept either (arr, cluster_ids) or a bare array/df for backwards compatibility
+        if isinstance(spectra_result, tuple):
+            spectra_arr, cluster_ids = spectra_result[0], spectra_result[1]
+        else:
+            spectra_arr = spectra_result
+            # if cluster ids not provided, fallback to integer indices 0..C-1
+            cluster_ids = np.arange(spectra_arr.shape[0])
+
+        # Convert to numpy array if needed and validate
+        if isinstance(spectra_arr, pd.DataFrame):
+            arr = spectra_arr.values
+        else:
+            arr = np.asarray(spectra_arr, dtype=float)
+
+        if arr.ndim != 2:
+            raise ValueError(f"Expected spectra_profiles to be 2D (C x F), got shape {arr.shape}")
+
+        # Build DataFrame: features x clusters with cluster_ids as columns
+        spectra_profiles_ = pd.DataFrame(arr.T, columns=list(cluster_ids))  # (F x C)
+
 
         # Optional subset of clusters to process
         if clusters_to_be_calculated != "All":
