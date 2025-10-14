@@ -8,6 +8,39 @@ from hyperspy._signals.eds_tem import EDSTEMSpectrum
 from .base import BaseDataset
 from typing import Union, Tuple, List, Callable
 
+
+# Prefer skimage.transform.resize (good quality). Provide fallback that uses scipy.ndimage.zoom
+try:
+    from skimage.transform import resize  # type: ignore
+except Exception:
+    try:
+        from scipy.ndimage import zoom as _zoom
+
+        def resize(image, output_shape, preserve_range=True, anti_aliasing=True):
+            """
+            Minimal replacement for skimage.transform.resize using scipy.ndimage.zoom.
+            - image: array-like
+            - output_shape: (rows, cols) target shape
+            Note: this fallback does not provide anti_aliasing control and uses simple zoom.
+            """
+            image = np.asarray(image)
+            # compute zoom factors for each axis (only 2D supported here)
+            if image.ndim == 2:
+                in_shape = image.shape
+                zoom_factors = (output_shape[0] / in_shape[0], output_shape[1] / in_shape[1])
+                return _zoom(image, zoom_factors, order=1)  # bilinear
+            elif image.ndim == 3:
+                # assume last axis is channel
+                in_shape = image.shape[:2]
+                zoom_factors = (output_shape[0] / in_shape[0], output_shape[1] / in_shape[1], 1.0)
+                return _zoom(image, zoom_factors, order=1)
+            else:
+                raise ValueError("resize fallback supports 2D or 3D images only")
+    except Exception:
+        # Very last-resort trivial identity function (won't resize)
+        def resize(image, output_shape, preserve_range=True, anti_aliasing=True):
+            raise ImportError("Neither skimage.transform.resize nor scipy.ndimage.zoom are available. Install scikit-image or scipy to enable image resizing.")
+
 class TEMDataset(BaseDataset):
     def __init__(self, file_path: str):
         super().__init__(file_path)
@@ -212,5 +245,7 @@ class TEMDataset(BaseDataset):
         # Avoid appending "Navigator" more than once
         if "Navigator" not in self.feature_list:
             self.feature_list.append("Navigator")
+            
+        self.nav_img_feature = self.nav_img
 
       
