@@ -597,6 +597,26 @@ def view_bic(
 
 
 def view_latent_space(ps: PixelSegmenter, color=True):
+    
+    """
+    Display an interactive visualization of the latent space for a PixelSegmenter.
+
+    This function plots the latent representation of a dataset and provides
+    interactive color pickers for customizing the cluster color palette. The
+    visualization can be updated in real time, and reset to the default colors
+    if desired.
+
+    Parameters
+    ----------
+    ps : PixelSegmenter
+        A PixelSegmenter instance containing the latent features and clustering results.
+    color : bool, optional (default=True)
+        Whether to color the latent space points by their cluster labels.
+        If False, a greyscale plot is shown.
+        
+    """
+    
+    
     colors = []
     cmap = plt.get_cmap(ps.color_palette)
     for i in range(ps.n_components):
@@ -1301,6 +1321,34 @@ def show_unmixed_weights_and_compoments(
 import matplotlib.colors as mcolors  # make sure this is imported
 
 def view_clusters_sum_spectra(ps: PixelSegmenter, normalisation=True, spectra_range=(0, 8)):
+    """
+    Display visualizations of cluster maps and their summed spectra profiles.
+
+    This function creates an interactive widget interface that allows users to select one or more
+    clusters from the current label map of a `PixelSegmenter` object and view both:
+      1. Cluster binary maps overlaid with their summed spectra.
+      2. Corresponding spectral profiles (energy vs intensity) for each cluster.
+
+    Parameters
+    ----------
+    ps : PixelSegmenter
+        An instance of the PixelSegmenter class containing label maps, cluster colors, and methods
+        for computing and visualizing spectral data.
+
+    normalisation : bool, optional (default=True)
+        Whether to normalize the spectra before plotting. When True, intensities are scaled for
+        comparison across clusters.
+
+    spectra_range : tuple of (float, float), optional (default=(0, 8))
+        Defines the range of the x-axis (energy range) used in the spectra plots.
+
+    Returns
+    -------
+    None
+        Displays interactive widgets and plots inline (typically in a Jupyter Notebook environment).
+    """
+    
+    
     # Get actual cluster IDs in current label map (excluding -1)
     current_labels = ps.labels
     all_cluster_ids = sorted(int(c) for c in np.unique(current_labels) if c != -1)
@@ -1467,7 +1515,24 @@ def save_csv(df):
     display(out)
 
 
-def show_cluster_stats(ps: PixelSegmenter, binary_filter_args={}):
+def show_cluster_stats(ps: PixelSegmenter, binary_filter_args=None):
+    import warnings
+    if binary_filter_args is None:
+        binary_filter_args = {}
+
+    # --- Filter peak list to only valid X-ray line names (avoid "Navigator" etc) ---
+    all_peaks = list(ps.peak_list) if hasattr(ps, "peak_list") else []
+    valid_peaks = [p for p in all_peaks if p in getattr(ps, "peak_dict", {})]
+    excluded = [p for p in all_peaks if p not in valid_peaks]
+    if excluded:
+        # one-time user-visible warning so they know why columns are missing
+        warnings.warn(
+            f"The following entries from ps.peak_list were excluded because they are not valid "
+            f"X-ray line names and would cause Hyperspy errors: {excluded}",
+            UserWarning,
+        )
+
+    # base property columns (spatial metrics)
     columns = [
         "area (um^2)",
         "equivalent_diameter (um)",
@@ -1475,9 +1540,11 @@ def show_cluster_stats(ps: PixelSegmenter, binary_filter_args={}):
         "minor_axis_length (um)",
     ]
 
+    # add intensity columns but only for valid peaks
     for item in ("min_intensity", "mean_intensity", "max_intensity"):
-        columns += [f"{item}_{peak}" for peak in ps.peak_list]
+        columns += [f"{item}_{peak}" for peak in valid_peaks]
 
+    # If there are no valid element peaks, still allow the GUI to show spatial props
     properties = widgets.Dropdown(options=columns, description="property:")
     clusters = widgets.SelectMultiple(
         options=[f"cluster_{i}" for i in range(ps.n_components)], description="cluster:"
@@ -1487,26 +1554,43 @@ def show_cluster_stats(ps: PixelSegmenter, binary_filter_args={}):
     )
     output = widgets.Output()
 
-    def plot_output(clusters, properties, bound_bins):
+    def plot_output(clusters_sel, properties_sel, bound_bins_val):
         output.clear_output()
         df_list = []
         fig_list = []
         with output:
-            for cluster in clusters:
+            # if user selected an intensity property but we have no valid peaks, show message
+            if any(pfx in properties_sel for pfx in ("min_intensity_", "mean_intensity_", "max_intensity_")) and len(valid_peaks) == 0:
+                print("⚠️ No valid element peaks available for intensity statistics. Please remove navigator-like entries from the dataset feature list.")
+                return
+
+            for cluster in clusters_sel:
+                cluster_idx = int(cluster.split("_")[1])
+                # pass only valid_peaks into phase_stats to avoid Hyperspy complaining
                 df_stats = ps.phase_stats(
-                    cluster_num=int(cluster.split("_")[1]),
-                    element_peaks=ps.peak_list,
+                    cluster_num=cluster_idx,
+                    element_peaks=valid_peaks,
                     binary_filter_args=binary_filter_args,
                 )
-                df_list.append(df_stats[properties])
+                # if the requested property is missing from df_stats (safer), skip with warning
+                if properties_sel not in df_stats.columns:
+                    print(f"⚠️ Property '{properties_sel}' not found for cluster_{cluster_idx}; skipping.")
+                    continue
+
+                df_list.append(df_stats[properties_sel])
                 fig, axs = plt.subplots(1, 1, figsize=(4, 3), dpi=96)
                 sns.set_style("ticks")
-                sns.histplot(df_stats[properties], bins=bound_bins)
+                sns.histplot(df_stats[properties_sel], bins=bound_bins_val)
                 plt.title(cluster)
                 plt.show()
                 fig_list.append(fig)
-            df_list = pd.concat(df_list, axis=1, keys=clusters)
+            if len(df_list) == 0:
+                print("⚠️ No valid data to display.")
+                return
 
+            df_list = pd.concat(df_list, axis=1, keys=clusters_sel)
+
+        # outside the 'with output' so saving dialogs don't clutter widget area
         save_csv(df_list)
         fig_list = fig_list[0] if len(fig_list) == 1 else fig_list
         save_fig(fig_list)
@@ -1528,6 +1612,164 @@ def show_cluster_stats(ps: PixelSegmenter, binary_filter_args={}):
     display(all_widgets)
     display(output)
 
+
+def show_cluster_proportions(ps: PixelSegmenter, binary_filter_args=None):
+    """
+    Interactive GUI to view/plot cluster proportions from a PixelSegmenter.
+
+    Controls:
+      - use_soft: use soft probabilities (requires ps.prob_map)
+      - exclude_noise: drop -1 label
+      - sort_by: 'cluster_id' or 'proportion'
+      - orientation: 'vertical' (default) or 'horizontal' bars
+      - rotate_xticks: degrees to rotate x-tick labels (0..90)
+      - fontsize: tick label font size
+      - show_table: whether to print the resulting DataFrame above the plot
+
+    The plotting auto-scales figure width with cluster count to avoid overlapping labels.
+    """
+    import warnings
+    import numpy as _np
+    import pandas as _pd
+    import matplotlib.pyplot as _plt
+    import matplotlib.ticker as mtick
+    import ipywidgets as widgets
+    from IPython.display import display, clear_output
+
+    if binary_filter_args is None:
+        binary_filter_args = {}
+
+    # Widgets
+    use_soft = widgets.Checkbox(value=False, description="use soft probs")
+    exclude_noise = widgets.Checkbox(value=True, description="exclude noise (-1)")
+    sort_by = widgets.Dropdown(options=["cluster_id", "proportion"], value="cluster_id", description="sort by:")
+    orientation = widgets.ToggleButtons(options=["vertical", "horizontal"], value="vertical", description="orientation:")
+    rotate_xticks = widgets.IntSlider(value=30, min=0, max=90, step=5, description="rotate:")
+    fontsize = widgets.IntSlider(value=9, min=6, max=14, step=1, description="fontsize:")
+    show_table = widgets.Checkbox(value=True, description="show table")
+    refresh = widgets.Button(description="Refresh", button_style="primary", tooltip="Recompute and redraw")
+
+    out = widgets.Output()
+
+    def _draw(df: _pd.DataFrame, orient="vertical", rot=30, fs=9):
+        out.clear_output()
+        with out:
+            if df is None or df.shape[0] == 0:
+                print("⚠️ No data to plot.")
+                return
+
+            # Sorting
+            df_plot = df.copy()
+            if sort_by.value == "proportion" and "proportion" in df_plot.columns:
+                df_plot = df_plot.sort_values("proportion", ascending=False)
+            else:
+                # ensure integer index sorting by cluster id
+                try:
+                    df_plot = df_plot.sort_index()
+                except Exception:
+                    pass
+
+            # show table if requested
+            if show_table.value:
+                display(df_plot.round(4))
+
+            # plotting params
+            n = len(df_plot)
+            # width scale: base width 0.3 per cluster for vertical, or fixed height for horizontal
+            if orient == "vertical":
+                fig_w = max(6, 0.35 * n)
+                fig_h = 4
+            else:
+                fig_w = 7
+                fig_h = max(4, 0.25 * n)
+
+            fig, ax = _plt.subplots(figsize=(fig_w, fig_h), dpi=100)
+
+            xs = df_plot.index.astype(str)
+            ys = df_plot["proportion"].to_numpy(dtype=float)
+
+            # Color map consistent with PixelSegmenter palette if available
+            try:
+                cmap = ps.color_palette
+                if ps.n_components <= 10:
+                    color_values = [plt.cm.get_cmap(cmap)(i * 0.1) for i in range(len(xs))]
+                else:
+                    color_values = [plt.cm.get_cmap(cmap)(i / (len(xs)-1)) for i in range(len(xs))]
+            except Exception:
+                color_values = None
+
+            if orient == "vertical":
+                bars = ax.bar(xs, ys, color=color_values, alpha=0.85)
+                ax.set_xlabel("Cluster id")
+                ax.set_ylabel("Proportion (%)")
+                # y-axis as percentage
+                ax.yaxis.set_major_formatter(mtick.PercentFormatter(1.0))
+                _plt.xticks(rotation=rot, fontsize=fs)
+                _plt.yticks(fontsize=fs)
+            else:
+                bars = ax.barh(xs, ys, color=color_values, alpha=0.85)
+                ax.set_ylabel("Cluster id")
+                ax.set_xlabel("Proportion (%)")
+                ax.xaxis.set_major_formatter(mtick.PercentFormatter(1.0))
+                _plt.yticks(fontsize=fs)
+                _plt.xticks(fontsize=fs)
+                # for horizontal, annotate on bars to right
+            # annotate bars with percent & optional counts
+            show_counts = "pixel_count" in df_plot.columns
+            for rect, val, idx in zip(bars, ys, df_plot.index):
+                if orient == "vertical":
+                    h = rect.get_height()
+                    label = f"{val*100:.2f}%"
+                    if show_counts:
+                        label += f"\n({int(df_plot.at[idx,'pixel_count'])})"
+                    ax.annotate(label, xy=(rect.get_x() + rect.get_width() / 2, h),
+                                xytext=(0, 4), textcoords="offset points", ha='center', va='bottom', fontsize=max(7, fs-1))
+                else:
+                    w = rect.get_width()
+                    label = f"{val*100:.2f}%"
+                    if show_counts:
+                        label += f" ({int(df_plot.at[idx,'pixel_count'])})"
+                    ax.annotate(label, xy=(w, rect.get_y() + rect.get_height() / 2),
+                                xytext=(4, 0), textcoords="offset points", ha='left', va='center', fontsize=max(7, fs-1))
+
+            ax.grid(axis="y" if orient == "vertical" else "x", linestyle="--", alpha=0.3)
+            _plt.tight_layout()
+            _plt.show()
+
+    def _refresh(_=None):
+        out.clear_output()
+        try:
+            df = ps.compute_cluster_proportions(
+                use_soft=use_soft.value,
+                exclude_noise=exclude_noise.value,
+                area_units="um2",
+                return_counts=True,
+                plot=False,
+            )
+        except Exception as e:
+            with out:
+                print(f"⚠️ Could not compute cluster proportions: {e}")
+            return
+        _draw(df, orient=orientation.value, rot=rotate_xticks.value, fs=fontsize.value)
+
+    # wire up interactions
+    refresh.on_click(_refresh)
+    for w in (use_soft, exclude_noise, sort_by, orientation, rotate_xticks, fontsize, show_table):
+        def _on_change(change):
+            # redraw automatically on control change (but keep "Refresh" for manual refresh)
+            if change["name"] == "value":
+                _refresh()
+        w.observe(_on_change, names="value")
+
+    # initial draw
+    _refresh()
+
+    # layout and display
+    control_row1 = widgets.HBox([use_soft, exclude_noise, sort_by, orientation])
+    control_row2 = widgets.HBox([rotate_xticks, fontsize, show_table, refresh])
+    display(control_row1)
+    display(control_row2)
+    display(out)
 
 def view_emi_dataset(tem, search_energy=True):
     if search_energy == True:

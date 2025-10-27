@@ -1622,3 +1622,166 @@ class PixelSegmenter(object):
             columns=[f"cpnt_{i}" for i in range(k)],
         )
         return weights, components
+        
+    def compute_cluster_proportions(
+        self,
+        use_soft: bool = False,
+        soft_threshold: float = None,
+        exclude_noise: bool = True,
+        noise_label: int = -1,
+        area_units: str = "pixels",  # "pixels" (default) or "um2"
+        return_counts: bool = True,   # now True by default so pixel_count is returned
+        plot: bool = False,
+    ):
+        """
+        Compute pixel proportions for each cluster and optionally plot them.
+
+        Returns a pandas.DataFrame indexed by cluster_id with columns:
+          - pixel_count (absolute pixel counts or summed probabilities)
+          - proportion (fraction of denominator)
+          - area_um2 (if calibration available, else NaN)
+
+        Behavior notes
+        --------------
+        - If `use_soft=True` and self.prob_map exists, pixel_count is the summed
+          probabilities for each cluster. Denominator is total pixels unless
+          soft_threshold is provided (then only pixels with max prob >= threshold
+          are counted in denominator).
+        - If `use_soft=False` hard labels (self.labels) are used.
+        """
+        import numpy as _np
+        import pandas as _pd
+        import matplotlib.pyplot as _plt
+        import matplotlib.ticker as mtick
+
+        # determine spatial size
+        if hasattr(self, "height") and hasattr(self, "width"):
+            total_pixels = int(self.height) * int(self.width)
+        else:
+            try:
+                sp_shape = self.spectra.data.shape[:2]
+                total_pixels = int(sp_shape[0]) * int(sp_shape[1])
+            except Exception:
+                raise ValueError("Cannot determine spatial dimensions (height/width or spectra).")
+
+        # default empty df
+        df = None
+
+        # --- Soft-probability path ---
+        if use_soft and hasattr(self, "prob_map") and self.prob_map is not None:
+            prob_map = _np.asarray(self.prob_map)  # (n_pixels, n_clusters)
+            if prob_map.ndim != 2:
+                raise ValueError("prob_map must be 2D (n_pixels x n_components).")
+            n_pixels, n_clusters = prob_map.shape
+            if n_pixels != total_pixels:
+                raise ValueError(f"Mismatch: prob_map has {n_pixels} pixels but expected {total_pixels}.")
+
+            # summed probabilities per cluster
+            cluster_sums = prob_map.sum(axis=0).astype(float)
+
+            # denominator handling
+            if soft_threshold is not None:
+                max_prob = prob_map.max(axis=1)
+                include_mask = max_prob >= float(soft_threshold)
+                denom = include_mask.sum()
+                if denom == 0:
+                    raise ValueError("soft_threshold excluded all pixels (denominator 0).")
+                cluster_sums = prob_map[include_mask].sum(axis=0).astype(float)
+            else:
+                denom = n_pixels
+
+            cluster_ids = list(range(n_clusters))
+            df = _pd.DataFrame({"pixel_count": cluster_sums}, index=cluster_ids)
+            df["proportion"] = df["pixel_count"] / float(denom)
+
+        # --- Hard-label path ---
+        else:
+            if not hasattr(self, "labels"):
+                if hasattr(self, "model") and hasattr(self.model, "predict"):
+                    labels = _np.asarray(self.model.predict(self.latent))
+                else:
+                    raise ValueError("No hard labels found and cannot predict labels.")
+            else:
+                labels = _np.asarray(self.labels).astype(int)
+
+            if labels.size != total_pixels:
+                raise ValueError(f"Mismatch: labels length ({labels.size}) != total pixels ({total_pixels}).")
+
+            unique, counts = _np.unique(labels, return_counts=True)
+            df = _pd.DataFrame({"pixel_count": counts}, index=unique.astype(int))
+
+            # drop noise label if requested
+            if exclude_noise and (noise_label in df.index):
+                df = df.drop(noise_label)
+
+            denom = df["pixel_count"].sum()
+            if denom == 0:
+                raise ValueError("No pixels in selected clusters (denominator 0).")
+            df["proportion"] = df["pixel_count"].astype(float) / float(denom)
+
+        # Ensure index name and sorting
+        df.index.name = "cluster_id"
+        df = df.sort_index()
+
+        # Compute area_um2 where possible (add column even if NaN)
+        area_um2 = _np.nan
+        try:
+            # prefer self.spectra.axes_manager, fallback to dataset.spectra.axes_manager
+            if hasattr(self, "spectra") and hasattr(self.spectra, "axes_manager"):
+                pixel_to_um = float(self.spectra.axes_manager[0].scale)
+            elif hasattr(self, "dataset") and hasattr(self.dataset, "spectra") and hasattr(self.dataset.spectra, "axes_manager"):
+                pixel_to_um = float(self.dataset.spectra.axes_manager[0].scale)
+            else:
+                pixel_to_um = None
+
+            if pixel_to_um is not None:
+                df["area_um2"] = df["pixel_count"] * (pixel_to_um ** 2)
+            else:
+                df["area_um2"] = _np.nan
+        except Exception:
+            df["area_um2"] = _np.nan
+
+        # If user doesn't want counts, drop pixel_count but keep area_um2 and proportion
+        if not return_counts:
+            df = df[["proportion", "area_um2"]]
+
+        # --- Plotting: autoscaled and percentage y-axis ---
+        if plot:
+            try:
+                # Print the table for quick inspection
+                print(df.round(4))
+
+                fig, ax = _plt.subplots(figsize=(6, 3.5), dpi=100)
+
+                # bar of proportions
+                xs = df.index.astype(str)
+                ys = df["proportion"].to_numpy(dtype=float)
+                bars = ax.bar(xs, ys, alpha=0.85)
+
+                # y-axis autoscale with margin (don't force 0-1)
+                y_max = max(ys.max(), 1e-6)
+                top = min(1.0, y_max * 1.25) if y_max > 0 else 0.05
+                ax.set_ylim(0, top)
+
+                # Show percentage ticks on y-axis
+                ax.yaxis.set_major_formatter(mtick.PercentFormatter(1.0))
+                ax.set_ylabel("Proportion (%)")
+                ax.set_xlabel("Cluster id")
+                ax.set_title("Cluster proportions")
+
+                # annotate small bars with percent labels if they are small
+                for rect, val in zip(bars, ys):
+                    h = rect.get_height()
+                    label = f"{val*100:.2f}%"
+                    # place label above bar, but adjust if near top
+                    ax.annotate(label, xy=(rect.get_x() + rect.get_width() / 2, h),
+                                xytext=(0, 3), textcoords="offset points", ha='center', va='bottom', fontsize=8)
+
+                ax.grid(axis="y", linestyle="--", alpha=0.3)
+                _plt.tight_layout()
+                _plt.show()
+
+            except Exception as e:
+                print(f"⚠️ Could not create plot: {e}")
+
+        return df
