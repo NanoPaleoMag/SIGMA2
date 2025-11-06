@@ -192,37 +192,88 @@ class PixelSegmenter(object):
         binary_filter_threshold=0.2,
     ):
         # Determine spatial shape from spectra
-        spectra_shape = self.spectra.data.shape[:2]
+        spectra_shape = tuple(self.spectra.data.shape[:2])
+        n_pixels = int(np.prod(spectra_shape))
 
         # --- Step 1: Get binary mask from soft or hard clustering ---
+        binary_map_flat = None
+        # Helper for final validation & reshape
+        def validate_and_return(flat_map):
+            flat_map = np.asarray(flat_map)
+            if flat_map.size != n_pixels:
+                raise ValueError(
+                    f"Mismatch: label size ({flat_map.size}) doesn't match spectra shape {spectra_shape} (n_pixels={n_pixels})"
+                )
+            return flat_map.astype(int)
+
+        # Try soft mask from prob_map (if present)
         if not use_label:
             use_soft_mask = False
-            if hasattr(self, "prob_map") and self.prob_map is not None and cluster_num < self.prob_map.shape[1]:
-                phase = self.prob_map[:, cluster_num]
-                use_soft_mask = True
-            elif hasattr(self, "model") and hasattr(self.model, "predict_proba"):
+            if hasattr(self, "prob_map") and self.prob_map is not None:
+                pm = np.asarray(self.prob_map)
+                # If prob_map is 1D but length equals n_pixels, treat as (n_pixels, 1)
+                if pm.ndim == 1:
+                    if pm.size == n_pixels:
+                        pm = pm.reshape(n_pixels, 1)
+                    else:
+                        # prob_map seems incompatible with spectra length
+                        pm = None
+                if pm is not None and pm.ndim == 2:
+                    # safe check for cluster_num bound
+                    if 0 <= int(cluster_num) < pm.shape[1]:
+                        phase = pm[:, int(cluster_num)]
+                        use_soft_mask = True
+
+            # fallback: model.predict_proba if available
+            if not use_soft_mask and hasattr(self, "model") and hasattr(self.model, "predict_proba"):
                 try:
-                    phase = self.model.predict_proba(self.latent)[:, cluster_num]
-                    use_soft_mask = True
-                except (AttributeError, IndexError):
-                    pass
+                    proba = self.model.predict_proba(self.latent)
+                    proba = np.asarray(proba)
+                    if proba.ndim == 1 and proba.size == n_pixels:
+                        proba = proba.reshape(n_pixels, 1)
+                    if proba.ndim == 2 and 0 <= int(cluster_num) < proba.shape[1]:
+                        phase = proba[:, int(cluster_num)]
+                        use_soft_mask = True
+                except (AttributeError, IndexError, ValueError):
+                    use_soft_mask = False
 
             if use_soft_mask:
+                # ensure phase length matches n_pixels
+                phase = np.asarray(phase)
+                if phase.size != n_pixels:
+                    raise ValueError(f"probability vector length {phase.size} != expected n_pixels {n_pixels}")
                 binary_map_flat = (phase > threshold).astype(int)
             else:
+                # Try to use hard labels
                 if hasattr(self, "labels"):
-                    binary_map_flat = (self.labels == cluster_num).astype(int)
+                    lbls = np.asarray(self.labels)
+                    # labels could already be flat of length n_pixels
+                    if lbls.size == n_pixels:
+                        binary_map_flat = (lbls == cluster_num).astype(int)
+                    # or labels could be 2D with same spatial shape
+                    elif lbls.shape == spectra_shape:
+                        binary_map_flat = (lbls.ravel() == cluster_num).astype(int)
+                    else:
+                        # If labels are not pixel-level, we can't use them directly
+                        raise ValueError(
+                            f"self.labels found but shape {lbls.shape} incompatible with spectra_shape {spectra_shape}."
+                        )
                 else:
                     raise ValueError(f"Could not find soft or hard cluster mask for cluster {cluster_num}")
         else:
-            binary_map_flat = (self.labels == cluster_num).astype(int)
+            # use_label=True: compare labels to cluster_num (allow string/int labels)
+            if not hasattr(self, "labels"):
+                raise ValueError("use_label=True but self.labels not present")
+            lbls = np.asarray(self.labels)
+            if lbls.size == n_pixels:
+                binary_map_flat = (lbls == cluster_num).astype(int)
+            elif lbls.shape == spectra_shape:
+                binary_map_flat = (lbls.ravel() == cluster_num).astype(int)
+            else:
+                raise ValueError(f"self.labels shape {lbls.shape} incompatible with spectra_shape {spectra_shape}.")
 
-        # Reshape flat map to match spectra 2D shape
-        if binary_map_flat.size != np.prod(spectra_shape):
-            raise ValueError(
-                f"Mismatch: label size ({binary_map_flat.size}) doesn't match spectra shape {spectra_shape}"
-            )
-
+        # Validate & reshape to 2D
+        binary_map_flat = validate_and_return(binary_map_flat)
         binary_map = binary_map_flat.reshape(spectra_shape)
         binary_map_indices = np.where(binary_map == 1)
 
