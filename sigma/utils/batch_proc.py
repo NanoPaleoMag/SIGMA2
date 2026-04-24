@@ -1141,29 +1141,29 @@ def show_batch_abundance_map_interactive_tight(
         return canvas
 
     def render():
-        phases = [dropdown_r.value, dropdown_g.value, dropdown_b.value]
+            phases = [dropdown_r.value, dropdown_g.value, dropdown_b.value]
 
-        rgb_images = [build_rgb_for_file(fk, phases) for fk in file_keys]
-        nav_images = [build_nav_for_file(fk) for fk in file_keys]
+            rgb_images = [build_rgb_for_file(fk, phases) for fk in file_keys]
+            nav_images = [build_nav_for_file(fk) for fk in file_keys]
 
-        rgb_canvas = make_stitched_canvas(rgb_images, n_rows, n_cols, fill_value=0.0)
-        nav_canvas = make_stitched_canvas(nav_images, n_rows, n_cols, fill_value=0.0)
+            rgb_canvas = make_stitched_canvas(rgb_images, n_rows, n_cols, fill_value=0.0)
+            nav_canvas = make_stitched_canvas(nav_images, n_rows, n_cols, fill_value=0.0)
 
-        fig1, ax1 = plt.subplots(1, 1, figsize=(12, 6), dpi=dpi)
-        ax1.imshow(rgb_canvas, interpolation="nearest")
-        ax1.axis("off")
-        plt.tight_layout(pad=0)
-        plt.show()
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), dpi=dpi)
 
-        fig2, ax2 = plt.subplots(1, 1, figsize=(12, 6), dpi=dpi)
-        ax2.imshow(nav_canvas, cmap="gray", interpolation="nearest")
-        ax2.axis("off")
-        plt.tight_layout(pad=0)
-        plt.show()
+            ax1.imshow(nav_canvas, cmap="gray", interpolation="nearest")
+            ax1.axis("off")
+            ax1.set_title("Navigation image")
 
-        if save_fig is not None:
-            save_fig(fig1)
-            save_fig(fig2)
+            ax2.imshow(rgb_canvas, interpolation="nearest")
+            ax2.axis("off")
+            ax2.set_title("RGB abundance map")
+
+            plt.tight_layout(pad=0.5)
+            plt.show()
+
+            if save_fig is not None:
+                save_fig(fig)
 
     def on_change(change):
         out.clear_output(wait=True)
@@ -1177,3 +1177,612 @@ def show_batch_abundance_map_interactive_tight(
     display(widgets.VBox([widgets.HBox([dropdown_r, dropdown_g, dropdown_b]), out]))
 
     render()
+    
+    
+import os
+import re
+import numpy as np
+import matplotlib.pyplot as plt
+import ipywidgets as widgets
+from IPython.display import display
+
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import ipywidgets as widgets
+from IPython.display import display
+from sklearn.decomposition import NMF
+
+from typing import Iterable, Dict, Any
+import os
+import gc
+import traceback
+import numpy as np
+
+from sigma.utils import normalisation as norm 
+from sigma.utils import visualisation as visual
+from sigma.utils.load import SEMDataset
+from sigma.src.utils import same_seeds
+from sigma.src.dim_reduction import Experiment
+from sigma.models.autoencoder import AutoEncoder
+from sigma.src.segmentation import PixelSegmenter
+from sigma.gui import gui
+from sigma.utils.loadtem import TEMDataset
+
+import os
+import re
+import numpy as np
+import matplotlib.pyplot as plt
+import ipywidgets as widgets
+from IPython.display import display
+
+def show_batch_abundance_map_interactive_tight_overlap(
+    batch_results,
+    nmf_result,
+    grid_shape=None,
+    dpi=140,
+    save_fig=None,
+    overlap_min_frac=0.03,
+    overlap_max_frac=0.10,
+    overlap_clamp_frac=0.25,
+    overlap_score_floor=-0.05,
+    overlap_downsample=2,
+    verbose=True,
+    force_vertical_overlap_zero=False,   # <-- add this
+):
+    from collections import Counter
+
+    if "weights" not in nmf_result:
+        raise ValueError("nmf_result must contain a 'weights' DataFrame.")
+
+    weights = nmf_result["weights"].copy()
+    weight_cols = [c for c in weights.columns if str(c).startswith("w_")]
+    if len(weight_cols) == 0:
+        raise ValueError("No NMF weight columns found (expected w_0, w_1, ...).")
+
+    if "file" not in weights.columns or "cluster_id" not in weights.columns:
+        raise ValueError("weights must contain 'file' and 'cluster_id' columns.")
+
+    def site_sort_key(path_like):
+        base = os.path.basename(str(path_like))
+        site_match = re.search(r"(?i)\bsite\s*(\d+)\b", base)
+        site_num = int(site_match.group(1)) if site_match else 10**9
+        nums = [int(x) for x in re.findall(r"\d+", base)]
+        return (site_num, nums, base.lower())
+
+    file_keys = [
+        fk for fk, rec in batch_results.items()
+        if isinstance(rec, dict) and "_label_map" in rec
+    ]
+    if len(file_keys) == 0:
+        raise ValueError("No files with '_label_map' found in batch_results.")
+
+    file_keys = sorted(file_keys, key=site_sort_key)
+
+    if grid_shape is None:
+        n_rows = 1
+        n_cols = len(file_keys)
+    else:
+        n_rows, n_cols = grid_shape
+        if n_rows <= 0 or n_cols <= 0:
+            raise ValueError("grid_shape must contain positive integers (n_rows, n_cols).")
+        if n_rows * n_cols < len(file_keys):
+            raise ValueError(
+                f"grid_shape={grid_shape} is too small for {len(file_keys)} files."
+            )
+
+    # ------------------------------------------------------------------
+    # Global per-component normalisation
+    # ------------------------------------------------------------------
+    global_max = {}
+    for col in weight_cols:
+        vmax = weights[col].max()
+        global_max[col] = float(vmax) if (np.isfinite(vmax) and vmax > 0) else 1.0
+
+    # ------------------------------------------------------------------
+    # Overlap estimation helpers
+    # ------------------------------------------------------------------
+    def _to_gray(img):
+        img = np.asarray(img)
+        if img.ndim == 2:
+            return img.astype(np.float32, copy=False)
+        if img.ndim == 3 and img.shape[2] >= 3:
+            return (0.2989 * img[..., 0] + 0.5870 * img[..., 1] + 0.1140 * img[..., 2]).astype(np.float32)
+        return img.mean(axis=-1).astype(np.float32)
+
+    def _ncc(a, b, eps=1e-8):
+        a = a.astype(np.float32, copy=False) - float(np.mean(a))
+        b = b.astype(np.float32, copy=False) - float(np.mean(b))
+        sa, sb = float(np.std(a)), float(np.std(b))
+        if sa < eps or sb < eps:
+            return -np.inf
+        return float(np.mean((a / (sa + eps)) * (b / (sb + eps))))
+
+    def estimate_overlap_ncc(img_a, img_b, axis="x", min_frac=0.03, max_frac=0.10, downsample=2):
+        a = _to_gray(img_a)
+        b = _to_gray(img_b)
+        if a.shape != b.shape:
+            raise ValueError(f"Tile shapes differ: A={a.shape}, B={b.shape}")
+
+        h, w = a.shape
+        ds = max(1, int(downsample))
+
+        if axis == "x":
+            min_px = max(1, int(w * min_frac))
+            max_px = max(min_px, int(w * max_frac))
+        else:
+            min_px = max(1, int(h * min_frac))
+            max_px = max(min_px, int(h * max_frac))
+
+        best_ov, best_score = min_px, -np.inf
+
+        if ds > 1:
+            a, b = a[::ds, ::ds], b[::ds, ::ds]
+            h2, w2 = a.shape
+            min_px2 = max(1, int(min_px / ds))
+            max_px2 = max(min_px2, int(max_px / ds))
+            if axis == "x":
+                for ov2 in range(min_px2, max_px2 + 1):
+                    score = _ncc(a[:, w2 - ov2:], b[:, :ov2])
+                    if score > best_score:
+                        best_score, best_ov = score, ov2 * ds
+            else:
+                for ov2 in range(min_px2, max_px2 + 1):
+                    score = _ncc(a[h2 - ov2:, :], b[:ov2, :])
+                    if score > best_score:
+                        best_score, best_ov = score, ov2 * ds
+        else:
+            if axis == "x":
+                for ov in range(min_px, max_px + 1):
+                    score = _ncc(a[:, w - ov:], b[:, :ov])
+                    if score > best_score:
+                        best_score, best_ov = score, ov
+            else:
+                for ov in range(min_px, max_px + 1):
+                    score = _ncc(a[h - ov:, :], b[:ov, :])
+                    if score > best_score:
+                        best_score, best_ov = score, ov
+
+        return int(best_ov), float(best_score)
+
+    def as_tile_grid(items_1d, n_rows, n_cols):
+        tiles, idx = [], 0
+        for r in range(n_rows):
+            row = []
+            for c in range(n_cols):
+                row.append(items_1d[idx] if idx < len(items_1d) else None)
+                idx += 1
+            tiles.append(row)
+        return tiles
+
+    def print_horizontal_overlaps(nav_tiles_local, file_keys, n_rows, n_cols,
+                                  ov_x, row_med_x, med_x):
+        """
+        Print horizontal overlap for each adjacent pair (r,c) -> (r,c+1).
+        Reports measured ov_x where available; otherwise indicates fallback used.
+        """
+    
+        # find a valid tile width
+        w0 = None
+        for row in nav_tiles_local:
+            for t in row:
+                if t is not None:
+                    w0 = int(np.asarray(t).shape[1])
+                    break
+            if w0 is not None:
+                break
+    
+        if w0 is None:
+            print("[overlap] Could not determine tile width (no tiles found).")
+            return
+    
+        # build a parallel grid of file basenames for nice printing
+        names = []
+        idx = 0
+        for r in range(n_rows):
+            row = []
+            for c in range(n_cols):
+                if idx < len(file_keys):
+                    row.append(os.path.basename(str(file_keys[idx])))
+                else:
+                    row.append(None)
+                idx += 1
+            names.append(row)
+    
+        print("\n================ HORIZONTAL OVERLAPS (per row) ================")
+        print(f"Tile width ≈ {w0} px")
+        if np.isfinite(med_x):
+            print(f"Global median overlap ≈ {float(med_x):.1f} px ({100*float(med_x)/w0:.2f}%)")
+        else:
+            print("Global median overlap: n/a")
+    
+        for r in range(n_rows):
+            # check if row has at least two tiles
+            row_has_any = any(t is not None for t in nav_tiles_local[r])
+            if not row_has_any:
+                continue
+    
+            print(f"\nRow {r}:")
+            for c in range(n_cols - 1):
+                left_name = names[r][c]
+                right_name = names[r][c + 1]
+    
+                left_tile = nav_tiles_local[r][c]
+                right_tile = nav_tiles_local[r][c + 1]
+    
+                # if either missing, skip
+                if left_tile is None or right_tile is None:
+                    continue
+    
+                # prefer measured overlap
+                source = "measured"
+                ov = np.nan
+    
+                if ov_x is not None and r < ov_x.shape[0] and c < ov_x.shape[1] and np.isfinite(ov_x[r, c]):
+                    ov = float(ov_x[r, c])
+                else:
+                    # fallback hierarchy matches your stitcher
+                    if row_med_x is not None and r < len(row_med_x) and np.isfinite(row_med_x[r]):
+                        ov = float(row_med_x[r])
+                        source = "row_median_fallback"
+                    elif np.isfinite(med_x):
+                        ov = float(med_x)
+                        source = "global_median_fallback"
+                    else:
+                        ov = 0.0
+                        source = "zero_fallback"
+    
+                ov_i = int(max(0, round(ov)))
+                ov_pct = 100.0 * ov_i / w0
+    
+                print(
+                    f"  (r{r}, c{c}) '{left_name}'  ->  (r{r}, c{c+1}) '{right_name}'"
+                    f"   overlap = {ov_i:4d}px  ({ov_pct:5.2f}%)   [{source}]"
+                )
+    
+        print("\n==============================================================\n")
+    
+
+    def compute_grid_overlaps_from_nav(nav_tiles, min_frac, max_frac, clamp_frac, score_floor, downsample):
+        n_rows_local = len(nav_tiles)
+        n_cols_local = max((len(r) for r in nav_tiles), default=0)
+
+        ov_x = np.full((n_rows_local, max(0, n_cols_local - 1)), np.nan, dtype=float)
+        ov_y = np.full((max(0, n_rows_local - 1), n_cols_local), np.nan, dtype=float)
+
+        for r in range(n_rows_local):
+            for c in range(n_cols_local - 1):
+                a = nav_tiles[r][c] if c < len(nav_tiles[r]) else None
+                b = nav_tiles[r][c + 1] if (c + 1) < len(nav_tiles[r]) else None
+                if a is None or b is None:
+                    continue
+                try:
+                    ov, score = estimate_overlap_ncc(a, b, axis="x", min_frac=min_frac,
+                                                     max_frac=max_frac, downsample=downsample)
+                    if score >= score_floor:
+                        ov_x[r, c] = ov
+                except Exception:
+                    continue
+
+        for r in range(n_rows_local - 1):
+            for c in range(n_cols_local):
+                a = nav_tiles[r][c] if c < len(nav_tiles[r]) else None
+                b = nav_tiles[r + 1][c] if c < len(nav_tiles[r + 1]) else None
+                if a is None or b is None:
+                    continue
+                try:
+                    ov, score = estimate_overlap_ncc(a, b, axis="y", min_frac=min_frac,
+                                                     max_frac=max_frac, downsample=downsample)
+                    if score >= score_floor:
+                        ov_y[r, c] = ov
+                except Exception:
+                    continue
+
+        med_x = np.nanmedian(ov_x) if np.any(np.isfinite(ov_x)) else np.nan
+        med_y = np.nanmedian(ov_y) if np.any(np.isfinite(ov_y)) else np.nan
+
+        def _clamp(arr, med):
+            if not np.isfinite(med):
+                return arr
+            lo, hi = med * (1 - clamp_frac), med * (1 + clamp_frac)
+            out = arr.copy()
+            m = np.isfinite(out)
+            out[m] = np.clip(out[m], lo, hi)
+            return out
+
+        ov_x = _clamp(ov_x, med_x)
+        ov_y = _clamp(ov_y, med_y)
+
+        row_med_x = []
+        for r in range(ov_x.shape[0]):
+            vals = ov_x[r, :][np.isfinite(ov_x[r, :])]
+            row_med_x.append(float(np.median(vals)) if vals.size else np.nan)
+
+        boundary_med_y = []
+        for r in range(ov_y.shape[0]):
+            vals = ov_y[r, :][np.isfinite(ov_y[r, :])]
+            boundary_med_y.append(float(np.median(vals)) if vals.size else np.nan)
+
+        return ov_x, ov_y, med_x, med_y, row_med_x, boundary_med_y
+
+    def _conform_width(rm, target_w, fill_value, is_rgb):
+        h, w = rm.shape[:2]
+        if w == target_w:
+            return rm
+        if w > target_w:
+            return rm[:, :target_w, :] if is_rgb else rm[:, :target_w]
+        pad_w = target_w - w
+        pad = np.full((h, pad_w, rm.shape[2]), fill_value, dtype=rm.dtype) if is_rgb \
+              else np.full((h, pad_w), fill_value, dtype=rm.dtype)
+        return np.concatenate([rm, pad], axis=1)
+
+    def stitch_grid_with_overlaps(tiles, ov_x, ov_y, med_x=np.nan, med_y=np.nan,
+                                  row_med_x=None, boundary_med_y=None, fill_value=0.0):
+        first = None
+        for row in tiles:
+            for t in row:
+                if t is not None:
+                    first = np.asarray(t)
+                    break
+            if first is not None:
+                break
+        if first is None:
+            raise ValueError("No tiles to stitch.")
+
+        is_rgb = first.ndim == 3
+
+        # Horizontal stitch each row
+        row_mosaics = []
+        for r, row in enumerate(tiles):
+            existing = [(c, np.asarray(t)) for c, t in enumerate(row) if t is not None]
+            if not existing:
+                row_mosaics.append(None)
+                continue
+
+            _, mosaic = existing[0]
+            for c, tile in existing[1:]:
+                ov = np.nan
+                if (ov_x is not None and r < ov_x.shape[0] and
+                        (c - 1) >= 0 and (c - 1) < ov_x.shape[1] and
+                        np.isfinite(ov_x[r, c - 1])):
+                    ov = ov_x[r, c - 1]
+
+                if not np.isfinite(ov):
+                    if row_med_x is not None and r < len(row_med_x) and np.isfinite(row_med_x[r]):
+                        ov = row_med_x[r]
+                    elif np.isfinite(med_x):
+                        ov = med_x
+                    else:
+                        ov = 0.0
+
+                ov = int(max(0, round(float(ov))))
+                if ov > 0:
+                    mosaic = mosaic[:, :-ov, :] if is_rgb else mosaic[:, :-ov]
+                mosaic = np.concatenate([mosaic, tile], axis=1)
+
+            row_mosaics.append(mosaic)
+
+        # Conform all row widths before vertical stitch
+        valid_widths = [rm.shape[1] for rm in row_mosaics if rm is not None]
+        if not valid_widths:
+            raise ValueError("No row mosaics to stitch.")
+
+        target_w = Counter(valid_widths).most_common(1)[0][0]
+        row_mosaics = [
+            _conform_width(rm, target_w, fill_value, is_rgb) if rm is not None else None
+            for rm in row_mosaics
+        ]
+
+        # Vertical stitch
+        stitched, stitched_r = None, None
+        for r, rm in enumerate(row_mosaics):
+            if rm is not None:
+                stitched, stitched_r = rm, r
+                break
+
+        for r in range(stitched_r + 1, len(row_mosaics)):
+            rm = row_mosaics[r]
+            if rm is None:
+                continue
+
+            ov = np.nan
+            boundary = r - 1
+            if (boundary_med_y is not None and boundary < len(boundary_med_y) and
+                    np.isfinite(boundary_med_y[boundary])):
+                ov = boundary_med_y[boundary]
+            elif np.isfinite(med_y):
+                ov = med_y
+            else:
+                ov = 0.0
+
+            ov = int(max(0, round(float(ov))))
+            if ov > 0:
+                stitched = stitched[:-ov, :, :] if is_rgb else stitched[:-ov, :]
+            stitched = np.concatenate([stitched, rm], axis=0)
+
+        return stitched
+
+    # ------------------------------------------------------------------
+    # Nav + overlap computation (runs once at startup)
+    # ------------------------------------------------------------------
+    def build_nav_for_file(file_key):
+        rec = batch_results[file_key]
+        nav_img = rec.get("_nav_img", None)
+        if nav_img is None:
+            label_map = np.asarray(rec["_label_map"])
+            return np.zeros_like(label_map, dtype=float)
+        return np.asarray(nav_img)
+
+    nav_images_all = [build_nav_for_file(fk) for fk in file_keys]
+    nav_tiles = as_tile_grid(nav_images_all, n_rows, n_cols)
+
+    ov_x, ov_y, med_x, med_y, row_med_x, boundary_med_y = compute_grid_overlaps_from_nav(
+        nav_tiles,
+        min_frac=overlap_min_frac,
+        max_frac=overlap_max_frac,
+        clamp_frac=overlap_clamp_frac,
+        score_floor=overlap_score_floor,
+        downsample=overlap_downsample,
+    )
+
+    if force_vertical_overlap_zero:
+        if verbose:
+            print("[overlap] Forcing vertical overlap to zero (no vertical cropping).")
+        if ov_y is not None:
+            ov_y[:] = 0.0
+        med_y = 0.0
+        if boundary_med_y is not None:
+            boundary_med_y = [0.0 for _ in boundary_med_y]
+
+    if verbose:
+        mx = f"{float(med_x):.1f}px" if np.isfinite(med_x) else "n/a"
+        my = f"{float(med_y):.1f}px" if np.isfinite(med_y) else "n/a"
+        print(f"[overlap] median horizontal ≈ {mx}, median vertical ≈ {my}")
+        hx = int(np.sum(np.isfinite(ov_x))) if ov_x.size else 0
+        hy = int(np.sum(np.isfinite(ov_y))) if ov_y.size else 0
+        print(f"[overlap] valid estimates: horizontal={hx}, vertical={hy}")
+
+    # ------------------------------------------------------------------
+    # RGB builder
+    # ------------------------------------------------------------------
+    def build_rgb_for_file(file_key, phases):
+        rec = batch_results[file_key]
+        label_map = np.asarray(rec["_label_map"])
+        h, w = label_map.shape
+        rgb = np.zeros((h, w, 3), dtype=float)
+
+        file_weights = weights[weights["file"] == file_key].copy()
+        if file_weights.empty:
+            raise ValueError(f"No NMF weights found for file '{file_key}'.")
+        file_weights = file_weights.set_index("cluster_id")
+
+        for channel_idx, phase in enumerate(phases[:3]):
+            if phase == "None" or phase not in weight_cols:
+                continue
+            channel_img = np.zeros((h, w), dtype=float)
+            for cluster_id in np.unique(label_map):
+                if cluster_id < 0 or cluster_id not in file_weights.index:
+                    continue
+                channel_img[label_map == cluster_id] = float(file_weights.loc[cluster_id, phase])
+            channel_img = np.clip(channel_img / global_max[phase], 0.0, 1.0)
+            rgb[:, :, channel_idx] = channel_img
+
+        return rgb
+
+    # ------------------------------------------------------------------
+    # Widgets
+    # ------------------------------------------------------------------
+    component_options = [("None", "None")] + [(c, c) for c in weight_cols]
+    dropdown_r = widgets.Dropdown(options=component_options, value="None", description="Red:")
+    dropdown_g = widgets.Dropdown(options=component_options, value="None", description="Green:")
+    dropdown_b = widgets.Dropdown(options=component_options, value="None", description="Blue:")
+    out = widgets.Output()
+
+    def render():
+        phases = [dropdown_r.value, dropdown_g.value, dropdown_b.value]
+
+        rgb_images = [build_rgb_for_file(fk, phases) for fk in file_keys]
+        nav_images_render = [build_nav_for_file(fk) for fk in file_keys]
+
+        rgb_tiles = as_tile_grid(rgb_images, n_rows, n_cols)
+        nav_tiles_local = as_tile_grid(nav_images_render, n_rows, n_cols)
+
+        
+        print_horizontal_overlaps(
+            nav_tiles_local=nav_tiles_local,
+            file_keys=file_keys,
+            n_rows=n_rows,
+            n_cols=n_cols,
+            ov_x=ov_x,
+            row_med_x=row_med_x,
+            med_x=med_x,
+        )
+
+
+        rgb_canvas = stitch_grid_with_overlaps(
+            rgb_tiles, ov_x, ov_y,
+            med_x=med_x, med_y=med_y,
+            row_med_x=row_med_x, boundary_med_y=boundary_med_y,
+            fill_value=0.0,
+        )
+        nav_canvas = stitch_grid_with_overlaps(
+            nav_tiles_local, ov_x, ov_y,
+            med_x=med_x, med_y=med_y,
+            row_med_x=row_med_x, boundary_med_y=boundary_med_y,
+            fill_value=0.0,
+        )
+        # --- DEBUG: draw correct seam lines on nav mosaic (row 0) ---
+        fig_debug, ax = plt.subplots(1, 1, figsize=(12, 6), dpi=dpi)
+        ax.imshow(nav_canvas, cmap="gray", interpolation="nearest")
+        ax.axis("off")
+        ax.set_title("Nav canvas with TRUE join (seam) lines")
+        
+        # find a valid tile width
+        w0 = None
+        for row in nav_tiles_local:
+            for t in row:
+                if t is not None:
+                    w0 = np.asarray(t).shape[1]
+                    break
+            if w0 is not None:
+                break
+        
+        if w0 is not None:
+            r = 0  # first row seams
+            x = 0
+            # draw seam between tile c and c+1 at x += (w0 - overlap_c)
+            for c in range(n_cols - 1):
+                # overlap for this join
+                ov = np.nan
+                if ov_x is not None and r < ov_x.shape[0] and c < ov_x.shape[1] and np.isfinite(ov_x[r, c]):
+                    ov = ov_x[r, c]
+                elif row_med_x is not None and r < len(row_med_x) and np.isfinite(row_med_x[r]):
+                    ov = row_med_x[r]
+                elif np.isfinite(med_x):
+                    ov = med_x
+                else:
+                    ov = 0.0
+        
+                ov = int(max(0, round(float(ov))))
+                x = x + (w0 - ov)  # THIS is the join location
+                ax.axvline(x, color="yellow", linewidth=0.9, alpha=0.8)
+        
+        plt.tight_layout()
+        plt.show()
+
+        # --- DEBUG: expected size vs actual size ---
+        tile0 = next(t for t in nav_images_render if t is not None)
+        h0, w0 = np.asarray(tile0).shape[:2]
+        
+        print("Single tile (h,w):", (h0, w0))
+        print("Naive canvas (h,w):", (n_rows*h0, n_cols*w0))
+        print("Actual nav_canvas:", np.asarray(nav_canvas).shape[:2])
+        print("Actual rgb_canvas:", np.asarray(rgb_canvas).shape[:2])
+
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), dpi=dpi)
+        ax1.imshow(nav_canvas, cmap="gray", interpolation="nearest")
+        ax1.axis("off")
+        ax1.set_title("Navigation image")
+        ax2.imshow(rgb_canvas, interpolation="nearest")
+        ax2.axis("off")
+        ax2.set_title("RGB abundance map")
+        plt.tight_layout(pad=0.5)
+        plt.show()
+
+        if save_fig is not None:
+            save_fig(fig)
+
+    def on_change(change):
+        out.clear_output(wait=True)
+        with out:
+            render()
+
+    dropdown_r.observe(on_change, names="value")
+    dropdown_g.observe(on_change, names="value")
+    dropdown_b.observe(on_change, names="value")
+
+    display(widgets.VBox([widgets.HBox([dropdown_r, dropdown_g, dropdown_b]), out]))
+
+    with out:
+        render()
