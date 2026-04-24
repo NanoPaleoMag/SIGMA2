@@ -876,6 +876,20 @@ def show_batch_abundance_map(
 
     if "file" not in weights.columns or "cluster_id" not in weights.columns:
         raise ValueError("weights must contain 'file' and 'cluster_id' columns.")
+        
+    
+    # ------------------------------------------------------------------
+    # Global per-component normalisation factors (dataset-wide)
+    # ------------------------------------------------------------------
+    global_max = {}
+
+    for col in weight_cols:
+        vmax = weights[col].max()
+        if vmax <= 0 or not np.isfinite(vmax):
+            global_max[col] = 1.0  # avoid division-by-zero
+        else:
+            global_max[col] = float(vmax)
+
 
     # Files that actually have label maps
     file_keys = [
@@ -919,9 +933,8 @@ def show_batch_abundance_map(
                 channel_img[label_map == cluster_id] = value
 
             # normalise channel for display
-            mx = channel_img.max()
-            if mx > 0:
-                channel_img = channel_img / mx
+            channel_img = channel_img / global_max[phase]
+            channel_img = np.clip(channel_img, 0.0, 1.0)
 
             rgb[:, :, channel_idx] = channel_img
 
@@ -996,24 +1009,10 @@ from IPython.display import display
 def show_batch_abundance_map_interactive_tight(
     batch_results,
     nmf_result,
-    grid_shape=None,   # None => one row side-by-side
+    grid_shape=None,
     dpi=140,
     save_fig=None,
 ):
-    """
-    Interactive batch abundance-map viewer with true stitched canvases.
-
-    Top figure: RGB abundance mosaic
-    Bottom figure: navigation-image mosaic
-
-    Expected:
-      batch_results[file_key]["_label_map"]
-      batch_results[file_key]["_nav_img"]  (optional)
-
-      nmf_result["weights"] with columns:
-        file, cluster_id, w_0, w_1, ...
-    """
-
     if "weights" not in nmf_result:
         raise ValueError("nmf_result must contain a 'weights' DataFrame.")
 
@@ -1051,6 +1050,14 @@ def show_batch_abundance_map_interactive_tight(
                 f"grid_shape={grid_shape} is too small for {len(file_keys)} files."
             )
 
+    # ------------------------------------------------------------------
+    # Pre-compute global max per component across ALL files
+    # ------------------------------------------------------------------
+    global_max = {}
+    for col in weight_cols:
+        vmax = weights[col].max()
+        global_max[col] = float(vmax) if (np.isfinite(vmax) and vmax > 0) else 1.0
+
     component_options = [("None", "None")] + [(c, c) for c in weight_cols]
     dropdown_r = widgets.Dropdown(options=component_options, value="None", description="Red:")
     dropdown_g = widgets.Dropdown(options=component_options, value="None", description="Green:")
@@ -1087,9 +1094,9 @@ def show_batch_abundance_map_interactive_tight(
                 value = float(file_weights.loc[cluster_id, phase])
                 channel_img[label_map == cluster_id] = value
 
-            mx = channel_img.max()
-            if mx > 0:
-                channel_img = channel_img / mx
+            # Normalise by global max so colours are comparable across all files
+            channel_img = channel_img / global_max[phase]
+            channel_img = np.clip(channel_img, 0.0, 1.0)
 
             rgb[:, :, channel_idx] = channel_img
 
@@ -1104,9 +1111,6 @@ def show_batch_abundance_map_interactive_tight(
         return np.asarray(nav_img)
 
     def make_stitched_canvas(images, n_rows, n_cols, fill_value=0.0):
-        """
-        Stitch equally sized images into one big canvas with no gaps.
-        """
         if len(images) == 0:
             raise ValueError("No images to stitch.")
 
@@ -1132,24 +1136,15 @@ def show_batch_abundance_map_interactive_tight(
                     f"All images must have the same shape. Expected {(h, w)}, got {img.shape[:2]}."
                 )
 
-            y0 = r * h
-            y1 = y0 + h
-            x0 = c * w
-            x1 = x0 + w
-
-            canvas[y0:y1, x0:x1] = img
+            canvas[r * h:(r + 1) * h, c * w:(c + 1) * w] = img
 
         return canvas
 
     def render():
         phases = [dropdown_r.value, dropdown_g.value, dropdown_b.value]
 
-        rgb_images = []
-        nav_images = []
-
-        for file_key in file_keys:
-            rgb_images.append(build_rgb_for_file(file_key, phases))
-            nav_images.append(build_nav_for_file(file_key))
+        rgb_images = [build_rgb_for_file(fk, phases) for fk in file_keys]
+        nav_images = [build_nav_for_file(fk) for fk in file_keys]
 
         rgb_canvas = make_stitched_canvas(rgb_images, n_rows, n_cols, fill_value=0.0)
         nav_canvas = make_stitched_canvas(nav_images, n_rows, n_cols, fill_value=0.0)
@@ -1179,13 +1174,6 @@ def show_batch_abundance_map_interactive_tight(
     dropdown_g.observe(on_change, names="value")
     dropdown_b.observe(on_change, names="value")
 
-    display(
-        widgets.VBox([
-            widgets.HBox([dropdown_r, dropdown_g, dropdown_b]),
-            out
-        ])
-    )
+    display(widgets.VBox([widgets.HBox([dropdown_r, dropdown_g, dropdown_b]), out]))
 
     render()
-    
-    
