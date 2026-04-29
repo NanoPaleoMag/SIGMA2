@@ -624,7 +624,7 @@ def show_batch_unmixed_weights_and_components(
 
     if peak_dict is None:
         peak_dict = nmf_result.get("peak_dict", None)
-        
+
         if peak_dict is None:
             peak_dict = {"Li_Ka": 0.055,
                         "Be_Ka": 0.108,
@@ -745,7 +745,9 @@ def show_batch_unmixed_weights_and_components(
                 color="black",
             )
 
-    # widgets
+    # ------------------------------------------------------------------
+    # Widgets
+    # ------------------------------------------------------------------
     multi_select_sample = widgets.SelectMultiple(
         options=list(weights.index),
         description="Samples",
@@ -762,6 +764,11 @@ def show_batch_unmixed_weights_and_components(
     component_output = widgets.Output()
     component_table_output = widgets.Output()
 
+    grid_output = widgets.Output()
+
+    # ------------------------------------------------------------------
+    # Weights tab
+    # ------------------------------------------------------------------
     with sample_table_output:
         display(weights[weight_cols + [c for c in ["file", "cluster_id"] if c in weights.columns]].round(3))
 
@@ -793,6 +800,9 @@ def show_batch_unmixed_weights_and_components(
 
     multi_select_sample.observe(on_sample_change, names="value")
 
+    # ------------------------------------------------------------------
+    # Single component tab
+    # ------------------------------------------------------------------
     with component_table_output:
         display(components.round(3))
 
@@ -819,24 +829,77 @@ def show_batch_unmixed_weights_and_components(
 
     component_dropdown.observe(on_component_change, names="value")
 
+    # ------------------------------------------------------------------
+    # All-components grid tab
+    # ------------------------------------------------------------------
+    def render_component_grid():
+        n = len(component_cols)
+        if n == 0:
+            print("No components to display.")
+            return
+
+        # choose grid dimensions: prefer ~4 columns, scale rows accordingly
+        n_cols_grid = min(4, n)
+        n_rows_grid = int(np.ceil(n / n_cols_grid))
+
+        fig, axes = plt.subplots(
+            n_rows_grid, n_cols_grid,
+            figsize=(5 * n_cols_grid, 3.2 * n_rows_grid),
+            dpi=110,
+            squeeze=False,
+        )
+
+        for idx, cpnt in enumerate(component_cols):
+            r, c = divmod(idx, n_cols_grid)
+            ax = axes[r][c]
+            y = components[cpnt].to_numpy(dtype=float)
+
+            ax.plot(energy_axis, y, linewidth=1.0)
+            annotate_peaks(ax, y, energy_axis, peak_dict, peak_list)
+
+            ax.set_xlim(0, 10)
+            ax.set_xlabel("Energy / keV", fontsize=8)
+            ax.set_ylabel("Intensity", fontsize=8)
+            ax.set_title(cpnt, fontsize=9)
+            ax.tick_params(labelsize=7)
+
+        # hide any unused axes in the last row
+        for idx in range(n, n_rows_grid * n_cols_grid):
+            r, c = divmod(idx, n_cols_grid)
+            axes[r][c].set_visible(False)
+
+        plt.tight_layout()
+        plt.show()
+
+        if save_fig is not None:
+            save_fig(fig)
+
+    with grid_output:
+        render_component_grid()
+
+    # ------------------------------------------------------------------
+    # Assemble tabs
+    # ------------------------------------------------------------------
     sample_box = widgets.VBox([
         widgets.HBox([multi_select_sample]),
         sample_table_output,
-        sample_output
+        sample_output,
     ])
 
     component_box = widgets.VBox([
         widgets.HBox([component_dropdown]),
         component_table_output,
-        component_output
+        component_output,
     ])
 
-    tabs = widgets.Tab(children=[sample_box, component_box])
+    grid_box = widgets.VBox([grid_output])
+
+    tabs = widgets.Tab(children=[sample_box, component_box, grid_box])
     tabs.set_title(0, "Weights")
     tabs.set_title(1, "Components")
+    tabs.set_title(2, "All Components")
 
     display(tabs)
-    
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -1217,6 +1280,14 @@ import matplotlib.pyplot as plt
 import ipywidgets as widgets
 from IPython.display import display
 
+import os
+import re
+import math
+import numpy as np
+import matplotlib.pyplot as plt
+import ipywidgets as widgets
+from IPython.display import display
+
 def show_batch_abundance_map_interactive_tight_overlap(
     batch_results,
     nmf_result,
@@ -1229,7 +1300,9 @@ def show_batch_abundance_map_interactive_tight_overlap(
     overlap_score_floor=-0.05,
     overlap_downsample=2,
     verbose=True,
-    force_vertical_overlap_zero=False,   # <-- add this
+    force_vertical_overlap_zero=False,
+    show_gridlines=True,   # draw seam lines on debug nav canvas (yellow=cols, cyan=rows)
+    debug_mode=True,       # when False, suppresses debug figure, overlap prints, size report
 ):
     from collections import Counter
 
@@ -1362,7 +1435,7 @@ def show_batch_abundance_map_interactive_tight_overlap(
         Print horizontal overlap for each adjacent pair (r,c) -> (r,c+1).
         Reports measured ov_x where available; otherwise indicates fallback used.
         """
-    
+
         # find a valid tile width
         w0 = None
         for row in nav_tiles_local:
@@ -1372,11 +1445,11 @@ def show_batch_abundance_map_interactive_tight_overlap(
                     break
             if w0 is not None:
                 break
-    
+
         if w0 is None:
             print("[overlap] Could not determine tile width (no tiles found).")
             return
-    
+
         # build a parallel grid of file basenames for nice printing
         names = []
         idx = 0
@@ -1389,36 +1462,36 @@ def show_batch_abundance_map_interactive_tight_overlap(
                     row.append(None)
                 idx += 1
             names.append(row)
-    
+
         print("\n================ HORIZONTAL OVERLAPS (per row) ================")
         print(f"Tile width ≈ {w0} px")
         if np.isfinite(med_x):
             print(f"Global median overlap ≈ {float(med_x):.1f} px ({100*float(med_x)/w0:.2f}%)")
         else:
             print("Global median overlap: n/a")
-    
+
         for r in range(n_rows):
             # check if row has at least two tiles
             row_has_any = any(t is not None for t in nav_tiles_local[r])
             if not row_has_any:
                 continue
-    
+
             print(f"\nRow {r}:")
             for c in range(n_cols - 1):
                 left_name = names[r][c]
                 right_name = names[r][c + 1]
-    
+
                 left_tile = nav_tiles_local[r][c]
                 right_tile = nav_tiles_local[r][c + 1]
-    
+
                 # if either missing, skip
                 if left_tile is None or right_tile is None:
                     continue
-    
+
                 # prefer measured overlap
                 source = "measured"
                 ov = np.nan
-    
+
                 if ov_x is not None and r < ov_x.shape[0] and c < ov_x.shape[1] and np.isfinite(ov_x[r, c]):
                     ov = float(ov_x[r, c])
                 else:
@@ -1432,17 +1505,16 @@ def show_batch_abundance_map_interactive_tight_overlap(
                     else:
                         ov = 0.0
                         source = "zero_fallback"
-    
+
                 ov_i = int(max(0, round(ov)))
                 ov_pct = 100.0 * ov_i / w0
-    
+
                 print(
                     f"  (r{r}, c{c}) '{left_name}'  ->  (r{r}, c{c+1}) '{right_name}'"
                     f"   overlap = {ov_i:4d}px  ({ov_pct:5.2f}%)   [{source}]"
                 )
-    
+
         print("\n==============================================================\n")
-    
 
     def compute_grid_overlaps_from_nav(nav_tiles, min_frac, max_frac, clamp_frac, score_floor, downsample):
         n_rows_local = len(nav_tiles)
@@ -1688,17 +1760,17 @@ def show_batch_abundance_map_interactive_tight_overlap(
         rgb_tiles = as_tile_grid(rgb_images, n_rows, n_cols)
         nav_tiles_local = as_tile_grid(nav_images_render, n_rows, n_cols)
 
-        
-        print_horizontal_overlaps(
-            nav_tiles_local=nav_tiles_local,
-            file_keys=file_keys,
-            n_rows=n_rows,
-            n_cols=n_cols,
-            ov_x=ov_x,
-            row_med_x=row_med_x,
-            med_x=med_x,
-        )
-
+        # --- Overlap print table (debug only) ---
+        if debug_mode:
+            print_horizontal_overlaps(
+                nav_tiles_local=nav_tiles_local,
+                file_keys=file_keys,
+                n_rows=n_rows,
+                n_cols=n_cols,
+                ov_x=ov_x,
+                row_med_x=row_med_x,
+                med_x=med_x,
+            )
 
         rgb_canvas = stitch_grid_with_overlaps(
             rgb_tiles, ov_x, ov_y,
@@ -1712,54 +1784,71 @@ def show_batch_abundance_map_interactive_tight_overlap(
             row_med_x=row_med_x, boundary_med_y=boundary_med_y,
             fill_value=0.0,
         )
-        # --- DEBUG: draw correct seam lines on nav mosaic (row 0) ---
-        fig_debug, ax = plt.subplots(1, 1, figsize=(12, 6), dpi=dpi)
-        ax.imshow(nav_canvas, cmap="gray", interpolation="nearest")
-        ax.axis("off")
-        ax.set_title("Nav canvas with TRUE join (seam) lines")
-        
-        # find a valid tile width
-        w0 = None
-        for row in nav_tiles_local:
-            for t in row:
-                if t is not None:
-                    w0 = np.asarray(t).shape[1]
-                    break
-            if w0 is not None:
-                break
-        
-        if w0 is not None:
-            r = 0  # first row seams
-            x = 0
-            # draw seam between tile c and c+1 at x += (w0 - overlap_c)
-            for c in range(n_cols - 1):
-                # overlap for this join
-                ov = np.nan
-                if ov_x is not None and r < ov_x.shape[0] and c < ov_x.shape[1] and np.isfinite(ov_x[r, c]):
-                    ov = ov_x[r, c]
-                elif row_med_x is not None and r < len(row_med_x) and np.isfinite(row_med_x[r]):
-                    ov = row_med_x[r]
-                elif np.isfinite(med_x):
-                    ov = med_x
-                else:
-                    ov = 0.0
-        
-                ov = int(max(0, round(float(ov))))
-                x = x + (w0 - ov)  # THIS is the join location
-                ax.axvline(x, color="yellow", linewidth=0.9, alpha=0.8)
-        
-        plt.tight_layout()
-        plt.show()
 
-        # --- DEBUG: expected size vs actual size ---
-        tile0 = next(t for t in nav_images_render if t is not None)
-        h0, w0 = np.asarray(tile0).shape[:2]
-        
-        print("Single tile (h,w):", (h0, w0))
-        print("Naive canvas (h,w):", (n_rows*h0, n_cols*w0))
-        print("Actual nav_canvas:", np.asarray(nav_canvas).shape[:2])
-        print("Actual rgb_canvas:", np.asarray(rgb_canvas).shape[:2])
+        # --- Debug figure: nav canvas with seam lines ---
+        if debug_mode:
+            fig_debug, ax = plt.subplots(1, 1, figsize=(12, 6), dpi=dpi)
+            ax.imshow(nav_canvas, cmap="gray", interpolation="nearest")
+            ax.axis("off")
+            ax.set_title("Nav canvas with TRUE join (seam) lines")
 
+            if show_gridlines:
+                # find tile dimensions
+                w0, h0 = None, None
+                for row in nav_tiles_local:
+                    for t in row:
+                        if t is not None:
+                            arr = np.asarray(t)
+                            h0, w0 = arr.shape[0], arr.shape[1]
+                            break
+                    if w0 is not None:
+                        break
+
+                if w0 is not None:
+                    # Vertical seam lines (column joins) — yellow
+                    for r in range(n_rows):
+                        x = 0
+                        for c in range(n_cols - 1):
+                            ov = np.nan
+                            if ov_x is not None and r < ov_x.shape[0] and c < ov_x.shape[1] and np.isfinite(ov_x[r, c]):
+                                ov = ov_x[r, c]
+                            elif row_med_x is not None and r < len(row_med_x) and np.isfinite(row_med_x[r]):
+                                ov = row_med_x[r]
+                            elif np.isfinite(med_x):
+                                ov = med_x
+                            else:
+                                ov = 0.0
+                            ov = int(max(0, round(float(ov))))
+                            x += w0 - ov
+                            ax.axvline(x, color="yellow", linewidth=0.9, alpha=0.8)
+
+                    # Horizontal seam lines (row joins) — cyan
+                    if h0 is not None:
+                        y = 0
+                        for r in range(n_rows - 1):
+                            ov = np.nan
+                            if boundary_med_y is not None and r < len(boundary_med_y) and np.isfinite(boundary_med_y[r]):
+                                ov = boundary_med_y[r]
+                            elif np.isfinite(med_y):
+                                ov = med_y
+                            else:
+                                ov = 0.0
+                            ov = int(max(0, round(float(ov))))
+                            y += h0 - ov
+                            ax.axhline(y, color="cyan", linewidth=0.9, alpha=0.8)
+
+            plt.tight_layout()
+            plt.show()
+
+            # --- Size report ---
+            tile0 = next(t for t in nav_images_render if t is not None)
+            h0, w0 = np.asarray(tile0).shape[:2]
+            print("Single tile (h,w):", (h0, w0))
+            print("Naive canvas (h,w):", (n_rows * h0, n_cols * w0))
+            print("Actual nav_canvas:", np.asarray(nav_canvas).shape[:2])
+            print("Actual rgb_canvas:", np.asarray(rgb_canvas).shape[:2])
+
+        # --- Main figure ---
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), dpi=dpi)
         ax1.imshow(nav_canvas, cmap="gray", interpolation="nearest")
         ax1.axis("off")
