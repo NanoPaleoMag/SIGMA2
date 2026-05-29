@@ -485,113 +485,230 @@ from sklearn.decomposition import NMF
 def nmf_on_batch_cluster_spectra(
     batch_results,
     n_components="All",
-    normalised=True,
     method_args=None,
     reference_energy="auto",
     fill_value=0.0,
-    energy_range=(0.0, 10.0),   # crop here
+    energy_range=(0.0, 10.0),
     peak_dict=None,
     peak_list=None,
+    # --- quantitative workflow ---
+    quant=False,
+    elements=None,
+    kfactors=None,
+    line_params=None,
+    background_method="linear",
 ):
     """
     Run NMF on all cluster-averaged spectra from batch results.
 
-    Crops spectra to energy_range before fitting.
+    Parameters
+    ----------
+    quant : bool
+        If False (default), runs the original max-normalised NMF workflow.
+        If True, runs the quantitative workflow:
+            - Integrated-intensity normalisation of cluster spectra
+            - Endmember renormalisation to unit integral
+            - Weights converted to signal mixing fractions (rows sum to 1)
+            - Optional Cliff-Lorimer quantification if `elements` is supplied
+    elements : list of str or None
+        Required for CL quantification when quant=True.
+        e.g. ["O", "Mg", "Al", "Si", "Ca", "Fe", "Ni"]
+        If None and quant=True, mixing fractions are returned but no
+        composition or mol fraction output is produced.
+    kfactors : dict or None
+        k-factors relative to Si-Kα. Defaults to CL_KFACTORS_REF.
+    line_params : dict or None
+        Characteristic line energies and integration windows (keV).
+        Defaults to EDS_LINE_PARAMS.
+    background_method : str
+        "linear" or "none". Background subtraction for peak integration.
+
+    Returns
+    -------
+    dict with keys:
+        weights             : DataFrame (n_spectra × n_components) + file/cluster_id cols
+        components          : DataFrame (n_channels × n_components), index = energy (keV)
+        model               : fitted NMF model
+        metadata            : DataFrame with file and cluster_id columns
+        energy              : np.ndarray — energy axis used
+        reconstruction_error: float
+        energy_range        : tuple
+        integrated_intensities : Series or None  (quant=True only)
+        compositions        : DataFrame or None  (quant=True + elements supplied)
+        mol_fractions       : DataFrame or None  (quant=True + elements supplied)
+        phase_sensitivity   : Series or None     (quant=True + elements supplied)
     """
+
+    # ------------------------------------------------------------------
+    # Inline reference data
+    # ------------------------------------------------------------------
+    _CL_KFACTORS_REF = {
+        "C":  0.12, "N":  0.18, "O":  0.34,
+        "Na": 0.83, "Mg": 0.89, "Al": 0.96,
+        "Si": 1.00, "P":  1.08, "S":  1.13,
+        "Cl": 1.20, "K":  1.35, "Ca": 1.40,
+        "Ti": 1.58, "Cr": 1.72, "Mn": 1.77,
+        "Fe": 1.83, "Ni": 1.92, "Cu": 2.01,
+        "Zn": 2.10,
+    }
+    _EDS_LINE_PARAMS = {
+        "C":  {"energy": 0.277, "window": 0.08},
+        "N":  {"energy": 0.392, "window": 0.08},
+        "O":  {"energy": 0.525, "window": 0.08},
+        "Na": {"energy": 1.041, "window": 0.10},
+        "Mg": {"energy": 1.254, "window": 0.10},
+        "Al": {"energy": 1.487, "window": 0.10},
+        "Si": {"energy": 1.740, "window": 0.10},
+        "P":  {"energy": 2.013, "window": 0.10},
+        "S":  {"energy": 2.307, "window": 0.10},
+        "Cl": {"energy": 2.621, "window": 0.12},
+        "K":  {"energy": 3.312, "window": 0.12},
+        "Ca": {"energy": 3.690, "window": 0.12},
+        "Ti": {"energy": 4.510, "window": 0.15},
+        "Cr": {"energy": 5.414, "window": 0.15},
+        "Mn": {"energy": 5.898, "window": 0.15},
+        "Fe": {"energy": 6.400, "window": 0.15},
+        "Ni": {"energy": 7.478, "window": 0.18},
+        "Cu": {"energy": 8.046, "window": 0.18},
+        "Zn": {"energy": 8.638, "window": 0.18},
+    }
+
+    if kfactors is None:
+        kfactors = _CL_KFACTORS_REF
+    if line_params is None:
+        line_params = _EDS_LINE_PARAMS
+
     method_args = {} if method_args is None else dict(method_args)
 
+    # ------------------------------------------------------------------
+    # 1. Collect spectra from batch results
+    # ------------------------------------------------------------------
     spectra_list = []
-
     for file_key, rec in batch_results.items():
-        if not isinstance(rec, dict):
+        if not isinstance(rec, dict) or "_error" in rec:
             continue
-        if "_error" in rec:
-            continue
-
-        if "clusters" in rec and isinstance(rec["clusters"], dict):
-            cluster_container = rec["clusters"]
-        else:
-            cluster_container = rec
-
+        cluster_container = rec.get("clusters", rec)
         for cid, cluster_rec in cluster_container.items():
             if not isinstance(cluster_rec, dict):
                 continue
-
             df = cluster_rec.get("spectra_profile", None)
             if df is None:
                 continue
-
             try:
                 e = np.asarray(df["energy"], dtype=float)
                 y = np.asarray(df["intensity"], dtype=float)
             except Exception:
                 continue
-
             if e.size == 0 or y.size == 0:
                 continue
-
             spectra_list.append((file_key, int(cid), e, y))
 
-    if len(spectra_list) == 0:
+    if not spectra_list:
         raise ValueError("No valid spectra_profile entries found in batch_results.")
 
-    # Reference energy axis
+    # ------------------------------------------------------------------
+    # 2. Build reference energy axis and crop to energy_range
+    # ------------------------------------------------------------------
     if isinstance(reference_energy, str) and reference_energy == "auto":
         ref_energy = spectra_list[0][2]
     else:
         ref_energy = np.asarray(reference_energy, dtype=float)
-        if ref_energy.ndim != 1:
-            raise ValueError("reference_energy must be 1D or 'auto'.")
 
-    # Crop reference axis to the requested range
     e0, e1 = energy_range
     ref_mask = (ref_energy >= e0) & (ref_energy <= e1)
     ref_energy = ref_energy[ref_mask]
 
-    aligned_spectra = []
-    meta_rows = []
-
+    # ------------------------------------------------------------------
+    # 3. Interpolate all spectra onto reference energy axis
+    # ------------------------------------------------------------------
+    aligned_spectra, meta_rows = [], []
     for file_key, cid, e, y in spectra_list:
         y_interp = np.interp(ref_energy, e, y, left=fill_value, right=fill_value)
-
-        if normalised and y_interp.max() > 0:
-            y_interp = y_interp / y_interp.max()
-
         aligned_spectra.append(y_interp)
         meta_rows.append({"file": file_key, "cluster_id": cid})
 
-    X = np.vstack(aligned_spectra)
+    X = np.vstack(aligned_spectra)   # (n_spectra, n_channels)
+    metadata_df = pd.DataFrame(meta_rows)
 
+    # ------------------------------------------------------------------
+    # 4. Normalisation — branching point
+    # ------------------------------------------------------------------
+    if quant:
+        # Integrated-intensity normalisation: ∫f(E)dE = 1 per spectrum
+        integrated = np.trapz(X, x=ref_energy, axis=1)
+        integrated = np.where(integrated == 0, 1.0, integrated)
+        X_fit = X / integrated[:, np.newaxis]
+    else:
+        # Original max-normalisation
+        row_max = X.max(axis=1, keepdims=True)
+        row_max = np.where(row_max == 0, 1.0, row_max)
+        X_fit = X / row_max
+        integrated = None
+
+    # ------------------------------------------------------------------
+    # 5. Fit NMF
+    # ------------------------------------------------------------------
     if n_components == "All":
-        n_components = min(X.shape[0], X.shape[1])
+        n_components = min(X_fit.shape[0], X_fit.shape[1])
     n_components = int(n_components)
 
     model = NMF(n_components=n_components, **method_args)
-    W = model.fit_transform(X)
-    H = model.components_
+    weights_raw    = model.fit_transform(X_fit)   # (n_spectra, n_components)
+    components_raw = model.components_            # (n_components, n_channels)
 
-    weights_df = pd.DataFrame(
-        W.round(3),
-        columns=[f"w_{i}" for i in range(n_components)],
+    # ------------------------------------------------------------------
+    # 6. Post-NMF normalisation — branching point
+    # ------------------------------------------------------------------
+    if quant:
+        # Normalise endmembers to unit integral; rescale weights to match
+        endmember_integrals = np.trapz(components_raw, x=ref_energy, axis=1)
+        endmember_integrals = np.where(endmember_integrals == 0, 1.0, endmember_integrals)
+
+        components_out = components_raw / endmember_integrals[:, np.newaxis]
+        weights_scaled  = weights_raw   * endmember_integrals[np.newaxis, :]
+
+        # Signal mixing fractions: rows sum to 1
+        row_sums = weights_scaled.sum(axis=1, keepdims=True)
+        row_sums = np.where(row_sums == 0, 1.0, row_sums)
+        weights_out = weights_scaled / row_sums
+    else:
+        components_out = components_raw
+        weights_out    = weights_raw
+
+    # ------------------------------------------------------------------
+    # 7. Package NMF outputs into DataFrames
+    # ------------------------------------------------------------------
+    component_names = [f"cpnt_{i}" for i in range(n_components)]
+    weight_col_names = [f"w_{i}" for i in range(n_components)]
+
+    weights_df = pd.concat(
+        [metadata_df,
+         pd.DataFrame(weights_out.round(4), columns=weight_col_names)],
+        axis=1,
     )
-    metadata_df = pd.DataFrame(meta_rows)
-    weights_df = pd.concat([metadata_df, weights_df], axis=1)
-
     components_df = pd.DataFrame(
-        H.T.round(3),
+        components_out.T.round(6),
         index=ref_energy,
-        columns=[f"cpnt_{i}" for i in range(n_components)],
+        columns=component_names,
     )
     components_df.index.name = "energy"
 
     out = {
-        "weights": weights_df,
-        "components": components_df,
-        "model": model,
-        "metadata": metadata_df,
-        "energy": ref_energy,
+        "weights":              weights_df,
+        "components":           components_df,
+        "model":                model,
+        "metadata":             metadata_df,
+        "energy":               ref_energy,
         "reconstruction_error": model.reconstruction_err_,
-        "energy_range": energy_range,
+        "energy_range":         energy_range,
+        # quant-only outputs — None when quant=False
+        "integrated_intensities": (
+            pd.Series(integrated, name="integrated_intensity_counts_keV")
+            if integrated is not None else None
+        ),
+        "compositions":      None,
+        "mol_fractions":     None,
+        "phase_sensitivity": None,
     }
 
     if peak_dict is not None:
@@ -599,8 +716,112 @@ def nmf_on_batch_cluster_spectra(
     if peak_list is not None:
         out["peak_list"] = peak_list
 
+    # ------------------------------------------------------------------
+    # 8. Cliff-Lorimer quantification (quant=True + elements supplied)
+    # ------------------------------------------------------------------
+    if not quant or elements is None:
+        return out
+
+    # Validate elements
+    missing_lp = [el for el in elements if el not in line_params]
+    if missing_lp:
+        raise ValueError(f"No line parameters defined for: {missing_lp}")
+    missing_kf = [el for el in elements if el not in kfactors]
+    if missing_kf:
+        raise ValueError(f"No k-factor defined for: {missing_kf}")
+
+    def _extract_peak_intensity(spectrum, line_energy, half_window):
+        lo, hi = line_energy - half_window, line_energy + half_window
+        peak_mask = (ref_energy >= lo) & (ref_energy <= hi)
+        if peak_mask.sum() < 2:
+            return 0.0
+        lo_idx = np.where(ref_energy <= lo)[0]
+        hi_idx = np.where(ref_energy >= hi)[0]
+        if background_method == "linear" and len(lo_idx) >= 1 and len(hi_idx) >= 1:
+            n_sh = 5
+            bg_lo_x = ref_energy[lo_idx[-min(n_sh, len(lo_idx)):]].mean()
+            bg_lo_y = spectrum[lo_idx[-min(n_sh, len(lo_idx)):]].mean()
+            bg_hi_x = ref_energy[hi_idx[:min(n_sh, len(hi_idx))]].mean()
+            bg_hi_y = spectrum[hi_idx[:min(n_sh, len(hi_idx))]].mean()
+            peak_energies = ref_energy[peak_mask]
+            if bg_hi_x != bg_lo_x:
+                slope = (bg_hi_y - bg_lo_y) / (bg_hi_x - bg_lo_x)
+                background = bg_lo_y + slope * (peak_energies - bg_lo_x)
+            else:
+                background = np.full_like(peak_energies, bg_lo_y)
+        else:
+            background = np.zeros(peak_mask.sum())
+        net = np.clip(spectrum[peak_mask] - background, 0, None)
+        return float(np.trapz(net, x=ref_energy[peak_mask]))
+
+    # Build intensity matrix (n_components, n_elements)
+    intensity_matrix = np.zeros((n_components, len(elements)))
+    for i, cpnt in enumerate(component_names):
+        spectrum = components_df[cpnt].to_numpy(dtype=float)
+        for j, el in enumerate(elements):
+            lp = line_params[el]
+            intensity_matrix[i, j] = _extract_peak_intensity(
+                spectrum, lp["energy"], lp["window"]
+            )
+
+    # Cliff-Lorimer: C_A/C_ref = (k_A/k_ref) * (I_A/I_ref)
+    ref_element = "Si" if "Si" in elements else elements[0]
+    ref_idx = elements.index(ref_element)
+
+    weight_matrix = np.zeros_like(intensity_matrix)
+    for i, cpnt in enumerate(component_names):
+        I_ref = intensity_matrix[i, ref_idx]
+        if I_ref == 0:
+            print(
+                f"Warning: {ref_element} peak not detected in {cpnt}. "
+                f"Composition will be NaN — check element list or peak windows."
+            )
+            weight_matrix[i, :] = np.nan
+            continue
+        for j, el in enumerate(elements):
+            k_rel = kfactors[el] / kfactors[ref_element]
+            weight_matrix[i, j] = k_rel * (intensity_matrix[i, j] / I_ref)
+
+    comp_row_sums = np.nansum(weight_matrix, axis=1, keepdims=True)
+    comp_row_sums = np.where(comp_row_sums == 0, np.nan, comp_row_sums)
+    compositions_df = pd.DataFrame(
+        (weight_matrix / comp_row_sums).round(4),
+        index=component_names,
+        columns=elements,
+    )
+
+    # Phase sensitivity factors and mol fraction conversion
+    stoich = compositions_df.copy()
+    for p in stoich.index:
+        row = stoich.loc[p].copy()
+        nonzero = row[row > 0]
+        if len(nonzero) == 0:
+            continue
+        stoich.loc[p] = row / nonzero.min()
+
+    alpha = pd.Series({el: 1.0 / kfactors[el] for el in elements}, dtype=float)
+    phase_sensitivity = (stoich * alpha).sum(axis=1).replace(0, np.nan)
+
+    # weights_df for mol fraction needs component columns only, aligned to compositions index
+    w_only = weights_df[weight_col_names].copy()
+    w_only.columns = component_names
+
+    corrected = w_only.divide(phase_sensitivity, axis=1)
+    mol_row_sums = corrected.sum(axis=1)
+    mol_fractions = corrected.div(mol_row_sums, axis=0).round(4)
+
+    # Re-attach file/cluster metadata to mol fractions
+    mol_fractions_df = pd.concat(
+        [metadata_df.reset_index(drop=True),
+         mol_fractions.reset_index(drop=True)],
+        axis=1,
+    )
+
+    out["compositions"]      = compositions_df
+    out["mol_fractions"]     = mol_fractions_df
+    out["phase_sensitivity"] = phase_sensitivity
+
     return out
-    
 def show_batch_unmixed_weights_and_components(
     nmf_result,
     batch_results=None,
